@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { createServerClient } from '@supabase/ssr'
 import { createClient } from '@supabase/supabase-js'
+import { createAuditLog } from '@/utils/audit'
 
 export async function POST(request: Request) {
   try {
@@ -18,13 +19,11 @@ export async function POST(request: Request) {
       }
     )
 
-    // 1. Verify caller is authenticated
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // 2. Verify caller is an owner
     const { data: profile } = await supabase
       .from('users')
       .select('role, tenant_id, branch_id')
@@ -41,7 +40,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
-    // 3. Admin client to create user
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
     if (!serviceKey) {
       return NextResponse.json({ error: 'SUPABASE_SERVICE_ROLE_KEY is missing from .env.local' }, { status: 500 })
@@ -63,7 +61,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: createError?.message || 'Failed to create user' }, { status: 400 })
     }
 
-    // 4. Update the profile created by the trigger with the owner's tenant, branch, and role
     const { error: updateError } = await supabaseAdmin
       .from('users')
       .update({
@@ -77,6 +74,21 @@ export async function POST(request: Request) {
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 400 })
     }
+
+    // Record Audit Log Entry
+    await createAuditLog({
+      supabase: supabaseAdmin,
+      tenantId: profile.tenant_id,
+      userId: user.id,
+      userEmail: user.email,
+      action: 'STAFF_ACCOUNT_CREATED',
+      entityType: 'users',
+      entityId: newAuthUser.user.id,
+      details: {
+        assigned_email: email,
+        assigned_role: role,
+      },
+    })
 
     return NextResponse.json({ success: true, user: newAuthUser.user })
   } catch (err: unknown) {

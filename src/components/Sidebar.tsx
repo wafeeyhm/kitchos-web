@@ -9,9 +9,11 @@ const allNavItems = [
   { name: 'Dashboard', href: '/', roles: ['owner', 'manager'] },
   { name: 'POS Terminal', href: '/pos', roles: ['owner', 'manager', 'cashier'] },
   { name: 'Inventory Manager', href: '/inventory', roles: ['owner', 'manager'] },
+  { name: 'Recipe Builder', href: '/recipes', roles: ['owner', 'manager'] }, // <-- New route added here
   { name: 'Sales History', href: '/sales', roles: ['owner', 'manager'] },
   { name: 'Menu & BOM', href: '/menu', roles: ['owner', 'manager'] },
   { name: 'Staff Management', href: '/staff', roles: ['owner'] },
+  { name: 'Audit Logs', href: '/audit-logs', roles: ['owner'] },
 ]
 
 export default function Sidebar() {
@@ -76,7 +78,6 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Workspace & Logout */}
       <div className="border-t border-zinc-800 pt-4 space-y-4">
         <div>
           <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Workspace</span>
