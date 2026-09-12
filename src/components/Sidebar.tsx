@@ -33,6 +33,11 @@ const NAV_ITEMS: NavItem[] = [
     icon: '🧾',
   },
   {
+    name: 'Purchases & Vendors',
+    href: '/purchases',
+    icon: '🚚',
+  },
+  {
     name: 'Recipes & COGS',
     href: '/recipes',
     icon: '📖',
@@ -49,7 +54,6 @@ export default function Sidebar() {
 
   return (
     <aside className="w-64 h-screen bg-neutral-950 border-r border-neutral-800 flex flex-col justify-between select-none">
-      {/* Brand Header */}
       <div>
         <div className="h-16 px-6 border-b border-neutral-800 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2.5 group">
@@ -69,7 +73,6 @@ export default function Sidebar() {
           <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" title="System Online" />
         </div>
 
-        {/* Navigation Items */}
         <nav className="p-3.5 space-y-1.5">
           {NAV_ITEMS.map((item) => {
             const isActive =
@@ -113,7 +116,6 @@ export default function Sidebar() {
         </nav>
       </div>
 
-      {/* Footer Profile / Quick Info */}
       <div className="p-4 border-t border-neutral-800 bg-neutral-950">
         <div className="p-3 rounded-xl bg-neutral-900/50 border border-neutral-800/80 flex items-center justify-between">
           <div className="flex items-center gap-2.5 min-w-0">
