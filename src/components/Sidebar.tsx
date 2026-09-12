@@ -1,97 +1,133 @@
-'use client'
+'use client';
 
-import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
-import { useState, useEffect } from 'react'
-import { createClient } from '@/utils/supabase/client'
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
-const allNavItems = [
-  { name: 'Dashboard', href: '/', roles: ['owner', 'manager'] },
-  { name: 'POS Terminal', href: '/pos', roles: ['owner', 'manager', 'cashier'] },
-  { name: 'Inventory Manager', href: '/inventory', roles: ['owner', 'manager'] },
-  { name: 'Recipe Builder', href: '/recipes', roles: ['owner', 'manager'] }, // <-- New route added here
-  { name: 'Sales History', href: '/sales', roles: ['owner', 'manager'] },
-  { name: 'Menu & BOM', href: '/menu', roles: ['owner', 'manager'] },
-  { name: 'Staff Management', href: '/staff', roles: ['owner'] },
-  { name: 'Audit Logs', href: '/audit-logs', roles: ['owner'] },
-]
+interface NavItem {
+  name: string;
+  href: string;
+  icon: string;
+  badge?: string;
+}
+
+const NAV_ITEMS: NavItem[] = [
+  {
+    name: 'Dashboard',
+    href: '/',
+    icon: '📊',
+  },
+  {
+    name: 'POS Terminal',
+    href: '/pos',
+    icon: '🖥️',
+  },
+  {
+    name: 'Kitchen (KDS)',
+    href: '/kds',
+    icon: '🍳',
+    badge: 'Live',
+  },
+  {
+    name: 'Sales & Orders',
+    href: '/sales',
+    icon: '🧾',
+  },
+  {
+    name: 'Recipes & COGS',
+    href: '/recipes',
+    icon: '📖',
+  },
+  {
+    name: 'Inventory & Waste',
+    href: '/inventory',
+    icon: '📦',
+  },
+];
 
 export default function Sidebar() {
-  const pathname = usePathname()
-  const router = useRouter()
-  const [role, setRole] = useState<string>('cashier')
-  const [loading, setLoading] = useState(true)
-  const [isLoggingOut, setIsLoggingOut] = useState(false)
-  const supabase = createClient()
-
-  useEffect(() => {
-    async function fetchUserRole() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: profile } = await supabase
-          .from('users')
-          .select('role')
-          .eq('id', user.id)
-          .single()
-
-        if (profile) {
-          setRole(profile.role)
-        }
-      }
-      setLoading(false)
-    }
-    fetchUserRole()
-  }, [supabase])
-
-  const handleLogout = async () => {
-    setIsLoggingOut(true)
-    await supabase.auth.signOut()
-    router.push('/login')
-    router.refresh()
-  }
-
-  const filteredItems = allNavItems.filter((item) => item.roles.includes(role))
+  const pathname = usePathname();
 
   return (
-    <aside className="flex w-64 flex-col border-r border-zinc-800 bg-zinc-900 p-6 flex-shrink-0">
-      <div className="mb-8">
-        <h2 className="text-xl font-extrabold tracking-tight text-white">KitchOS</h2>
-        <p className="text-xs text-zinc-400 capitalize">Role: {loading ? '...' : role}</p>
-      </div>
+    <aside className="w-64 h-screen bg-neutral-950 border-r border-neutral-800 flex flex-col justify-between select-none">
+      {/* Brand Header */}
+      <div>
+        <div className="h-16 px-6 border-b border-neutral-800 flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-2.5 group">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500 flex items-center justify-center font-black text-neutral-950 text-sm shadow-md shadow-emerald-950/50 group-hover:scale-105 transition-transform">
+              K
+            </div>
+            <div>
+              <span className="font-extrabold text-white text-base tracking-tight leading-none block">
+                KitchOS
+              </span>
+              <span className="text-[10px] text-neutral-500 font-mono tracking-wider uppercase">
+                Hospitality POS
+              </span>
+            </div>
+          </Link>
 
-      <nav className="flex-1 space-y-2">
-        {filteredItems.map((item) => {
-          const isActive = pathname === item.href
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center rounded-xl px-4 py-3 text-sm font-semibold transition ${
-                isActive
-                  ? 'bg-emerald-500 text-zinc-950 shadow-lg'
-                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'
-              }`}
-            >
-              {item.name}
-            </Link>
-          )
-        })}
-      </nav>
-
-      <div className="border-t border-zinc-800 pt-4 space-y-4">
-        <div>
-          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Workspace</span>
-          <p className="mt-1 text-sm font-medium text-zinc-300 truncate">Main Branch</p>
+          <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" title="System Online" />
         </div>
 
-        <button
-          onClick={handleLogout}
-          disabled={isLoggingOut}
-          className="w-full flex items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-2.5 text-xs font-semibold text-zinc-400 transition hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-400 disabled:opacity-50 cursor-pointer"
-        >
-          {isLoggingOut ? 'Signing out...' : 'Log Out'}
-        </button>
+        {/* Navigation Items */}
+        <nav className="p-3.5 space-y-1.5">
+          {NAV_ITEMS.map((item) => {
+            const isActive =
+              item.href === '/'
+                ? pathname === '/'
+                : pathname.startsWith(item.href);
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group ${
+                  isActive
+                    ? 'bg-neutral-900 text-white border border-neutral-800 shadow-sm'
+                    : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/60'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-base group-hover:scale-110 transition-transform">
+                    {item.icon}
+                  </span>
+                  <span>{item.name}</span>
+                </div>
+
+                {item.badge ? (
+                  <span
+                    className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${
+                      isActive
+                        ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800/60'
+                        : 'bg-neutral-900 text-neutral-500 border-neutral-800'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                ) : isActive ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                ) : null}
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
+
+      {/* Footer Profile / Quick Info */}
+      <div className="p-4 border-t border-neutral-800 bg-neutral-950">
+        <div className="p-3 rounded-xl bg-neutral-900/50 border border-neutral-800/80 flex items-center justify-between">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-neutral-800 border border-neutral-700 flex items-center justify-center text-xs font-bold text-neutral-300">
+              M
+            </div>
+            <div className="truncate">
+              <p className="text-xs font-bold text-white truncate">Main Station</p>
+              <p className="text-[10px] text-neutral-500 truncate font-mono">Store #01 • Online</p>
+            </div>
+          </div>
+          <span className="text-emerald-400 text-xs font-bold">●</span>
+        </div>
       </div>
     </aside>
-  )
+  );
 }
