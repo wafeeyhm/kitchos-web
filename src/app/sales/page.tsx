@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
+import ManagerPinModal from '@/components/ManagerPinModal';
 
 interface SaleItem {
   id: string;
@@ -43,11 +44,12 @@ export default function SalesHistoryPage() {
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
-  // Void Confirmation Modal State
+  // Void Confirmation & Manager Authorization Modal State
   const [voidSaleTarget, setVoidSaleTarget] = useState<Sale | null>(null);
   const [voidReason, setVoidReason] = useState('Customer canceled order');
   const [isVoiding, setIsVoiding] = useState(false);
   const [voidError, setVoidError] = useState<string | null>(null);
+  const [isManagerPinOpen, setIsManagerPinOpen] = useState(false);
 
   // Fetch sales records with child items
   const fetchSales = useCallback(async () => {
@@ -169,17 +171,21 @@ export default function SalesHistoryPage() {
     return { completedRevenue, completedCount, voidedCount, voidedAmount, aov };
   }, [filteredSales]);
 
-  // Handle Void Sale execution via RPC
-  const handleExecuteVoid = async () => {
+  // Handle Void Sale execution via RPC after manager authorization
+  const handleExecuteVoid = async (approvingManagerName?: string) => {
     if (!voidSaleTarget) return;
 
     setIsVoiding(true);
     setVoidError(null);
 
+    const fullReason = approvingManagerName
+      ? `${voidReason.trim()} (Approved by: ${approvingManagerName})`
+      : voidReason.trim();
+
     try {
       const { data, error } = await supabase.rpc('void_sale', {
         p_sale_id: voidSaleTarget.id,
-        p_reason: voidReason.trim() || 'Voided by cashier/manager',
+        p_reason: fullReason,
       });
 
       if (error) throw error;
@@ -208,7 +214,7 @@ export default function SalesHistoryPage() {
           <div>
             <h1 className="text-2xl font-black text-white tracking-tight">Sales & Orders Ledger</h1>
             <p className="text-xs text-neutral-400 mt-1">
-              Audit transaction history, reprint thermal slips, and execute inventory-backed order voids.
+              Audit transaction history, reprint thermal slips, and execute manager-authorized inventory rollbacks.
             </p>
           </div>
 
@@ -566,7 +572,7 @@ export default function SalesHistoryPage() {
           </div>
         )}
 
-        {/* VOID CONFIRMATION MODAL */}
+        {/* VOID CONFIRMATION STEP 1: Reason Selection */}
         {voidSaleTarget && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
@@ -581,9 +587,9 @@ export default function SalesHistoryPage() {
               </div>
 
               <div className="p-3 bg-rose-950/20 border border-rose-900/50 rounded-xl text-xs text-rose-300 space-y-1">
-                <p className="font-semibold">⚠️ Inventory Stock Rollback:</p>
+                <p className="font-semibold">⚠️ Inventory Stock Rollback & Security Notice:</p>
                 <p className="text-[11px] text-rose-400/90">
-                  All raw ingredient portions consumed by this ticket will be automatically returned to stock with a <code>CORRECTION</code> ledger entry.
+                  All raw ingredient portions consumed by this ticket will be automatically returned to stock. A 4-digit Manager PIN is required to approve this transaction.
                 </p>
               </div>
 
@@ -622,15 +628,27 @@ export default function SalesHistoryPage() {
                 <button
                   type="button"
                   disabled={isVoiding}
-                  onClick={handleExecuteVoid}
+                  onClick={() => setIsManagerPinOpen(true)}
                   className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition disabled:opacity-50 cursor-pointer shadow-lg shadow-rose-950/40"
                 >
-                  {isVoiding ? 'Voiding & Restocking...' : 'Confirm Void & Restock'}
+                  Authorize & Void Order →
                 </button>
               </div>
             </div>
           </div>
         )}
+
+        {/* STEP 2: MANAGER PIN OVERRIDE MODAL */}
+        <ManagerPinModal
+          isOpen={isManagerPinOpen}
+          title="Authorize Order Void"
+          description={`Enter 4-digit Manager PIN to void ticket #${voidSaleTarget?.id.slice(0, 8)}`}
+          onClose={() => setIsManagerPinOpen(false)}
+          onAuthorized={(manager) => {
+            setIsManagerPinOpen(false);
+            handleExecuteVoid(manager.name);
+          }}
+        />
       </main>
     </div>
   );
