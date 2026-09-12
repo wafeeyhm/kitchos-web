@@ -27,10 +27,29 @@ interface CompletedSale {
   amount_tendered: number;
   change_due: number;
   items: CartItem[];
+  staff_name?: string;
+}
+
+interface StaffMember {
+  id: string;
+  name: string;
+  role: string;
 }
 
 export default function PosPage() {
   const supabase = createClient();
+
+  // Active Staff & Lock Screen State
+  const [activeStaff, setActiveStaff] = useState<StaffMember>({
+    id: '',
+    name: 'Alex (Cashier)',
+    role: 'CASHIER',
+  });
+  const [isTerminalLocked, setIsTerminalLocked] = useState(false);
+  const [isSwitchStaffOpen, setIsSwitchStaffOpen] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [isVerifyingPin, setIsVerifyingPin] = useState(false);
 
   // Products & Catalog State
   const [products, setProducts] = useState<ProductItem[]>([]);
@@ -45,7 +64,7 @@ export default function PosPage() {
   const [activeShift, setActiveShift] = useState<CashShift | null>(null);
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
 
-  // Checkout Modal State (Supports cash, card, qr, and transfer)
+  // Checkout Modal State
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'qr' | 'transfer'>('cash');
   const [amountTendered, setAmountTendered] = useState<string>('');
@@ -56,7 +75,33 @@ export default function PosPage() {
   const [lastSale, setLastSale] = useState<CompletedSale | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
-  // Fetch products and available portions
+  // 1. Initial Staff Load from storage or default
+  useEffect(() => {
+    const saved = localStorage.getItem('kitchos_active_staff');
+    if (saved) {
+      try {
+        setActiveStaff(JSON.parse(saved));
+      } catch (e) {
+        // fallback to default
+      }
+    } else {
+      // Fetch Alex as default starter
+      supabase
+        .from('staff_members')
+        .select('id, name, role')
+        .eq('role', 'CASHIER')
+        .limit(1)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (data) {
+            setActiveStaff(data);
+            localStorage.setItem('kitchos_active_staff', JSON.stringify(data));
+          }
+        });
+    }
+  }, [supabase]);
+
+  // 2. Fetch Products
   const fetchProducts = useCallback(async () => {
     try {
       setLoadingProducts(true);
@@ -98,7 +143,7 @@ export default function PosPage() {
     }
   }, [supabase]);
 
-  // Fetch current active register shift
+  // 3. Fetch Active Register Shift
   const fetchActiveShift = useCallback(async () => {
     try {
       const { data, error } = await supabase
@@ -116,7 +161,6 @@ export default function PosPage() {
     }
   }, [supabase]);
 
-  // Initial load & real-time inventory subscription
   useEffect(() => {
     fetchProducts();
     fetchActiveShift();
@@ -136,13 +180,54 @@ export default function PosPage() {
     };
   }, [fetchProducts, fetchActiveShift, supabase]);
 
+  // Staff Authentication / Unlock with PIN
+  const handleAuthenticatePin = async (pinToTest: string, unlockOnly = false) => {
+    setIsVerifyingPin(true);
+    setPinError(null);
+    try {
+      const { data, error: rpcErr } = await supabase.rpc('authenticate_staff_pin', {
+        p_pin: pinToTest,
+      });
+
+      if (rpcErr) throw rpcErr;
+
+      const staff = data && data[0];
+      if (staff) {
+        if (!unlockOnly) {
+          setActiveStaff(staff);
+          localStorage.setItem('kitchos_active_staff', JSON.stringify(staff));
+        }
+        setIsTerminalLocked(false);
+        setIsSwitchStaffOpen(false);
+        setPinInput('');
+      } else {
+        setPinError('Invalid PIN. Please try again.');
+        setPinInput('');
+      }
+    } catch (err: any) {
+      setPinError(err.message || 'Authentication error.');
+      setPinInput('');
+    } finally {
+      setIsVerifyingPin(false);
+    }
+  };
+
+  const handleKeypadPress = (digit: string, isUnlockScreen: boolean) => {
+    if (isVerifyingPin || pinInput.length >= 4) return;
+    const nextPin = pinInput + digit;
+    setPinInput(nextPin);
+    if (nextPin.length === 4) {
+      handleAuthenticatePin(nextPin, isUnlockScreen);
+    }
+  };
+
   // Categories list
   const categories = useMemo(() => {
     const list = Array.from(new Set(products.map((p) => p.category.toUpperCase())));
     return ['ALL', ...list];
   }, [products]);
 
-  // Filtered product catalog
+  // Filtered products
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
       const matchesCat = selectedCategory === 'ALL' || p.category.toUpperCase() === selectedCategory;
@@ -218,7 +303,7 @@ export default function PosPage() {
   const changeDue = paymentMethod === 'cash' ? Math.max(0, tenderFloat - cartSubtotal) : 0;
   const isTenderSufficient = paymentMethod !== 'cash' || tenderFloat >= cartSubtotal;
 
-  // Process checkout
+  // Process checkout with staff_id tagging
   const handleProcessCheckout = async () => {
     if (cart.length === 0) return;
     if (!isTenderSufficient) {
@@ -233,7 +318,7 @@ export default function PosPage() {
       const finalTendered = paymentMethod === 'cash' ? tenderFloat : cartSubtotal;
       const finalChange = paymentMethod === 'cash' ? changeDue : 0;
 
-      // 1. Insert header sale
+      // 1. Insert header sale tagged with active cashier ID
       const { data: saleData, error: saleErr } = await supabase
         .from('sales')
         .insert({
@@ -242,6 +327,7 @@ export default function PosPage() {
           amount_tendered: finalTendered,
           change_due: finalChange,
           status: 'COMPLETED',
+          staff_id: activeStaff.id || null,
         })
         .select('id, created_at')
         .single();
@@ -270,6 +356,7 @@ export default function PosPage() {
         amount_tendered: finalTendered,
         change_due: finalChange,
         items: [...cart],
+        staff_name: activeStaff.name,
       });
 
       // 4. Reset checkout & cart states
@@ -301,16 +388,49 @@ export default function PosPage() {
             </div>
 
             <div className="flex items-center gap-3">
+              {/* Cashier Badge & Switcher */}
+              <div className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-xl p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinInput('');
+                    setPinError(null);
+                    setIsSwitchStaffOpen(true);
+                  }}
+                  className="flex items-center gap-2 hover:bg-neutral-800 px-2.5 py-1 rounded-lg text-xs transition cursor-pointer"
+                  title="Switch cashier"
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <span className="font-semibold text-white">{activeStaff.name}</span>
+                  <span className="text-[10px] text-neutral-400 bg-neutral-950 px-1.5 py-0.5 rounded uppercase">
+                    {activeStaff.role}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinInput('');
+                    setPinError(null);
+                    setIsTerminalLocked(true);
+                  }}
+                  className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded-lg transition cursor-pointer"
+                  title="Lock terminal"
+                >
+                  🔒
+                </button>
+              </div>
+
+              {/* Till Status */}
               {activeShift ? (
                 <button
                   type="button"
                   onClick={() => setIsShiftModalOpen(true)}
-                  className="flex items-center gap-2.5 bg-neutral-950 hover:bg-neutral-800/80 border border-emerald-800/50 px-3.5 py-1.5 rounded-xl text-xs transition-colors cursor-pointer shadow-sm"
+                  className="flex items-center gap-2 bg-neutral-950 hover:bg-neutral-800/80 border border-emerald-800/50 px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer shadow-sm"
                 >
                   <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="text-neutral-300 font-medium">{activeShift.cashier_name}</span>
                   <span className="font-mono text-emerald-400 font-bold">
-                    (${Number(activeShift.opening_float).toFixed(2)} Float)
+                    ${Number(activeShift.opening_float).toFixed(2)} Float
                   </span>
                   <span className="text-neutral-500 text-[10px] pl-1 border-l border-neutral-800">
                     Z-Report →
@@ -320,9 +440,9 @@ export default function PosPage() {
                 <button
                   type="button"
                   onClick={() => setIsShiftModalOpen(true)}
-                  className="flex items-center gap-2 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/60 px-3.5 py-1.5 rounded-xl text-xs text-amber-300 font-semibold transition-colors cursor-pointer shadow-sm"
+                  className="flex items-center gap-2 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/60 px-3.5 py-1.5 rounded-xl text-xs text-amber-300 font-semibold transition cursor-pointer shadow-sm"
                 >
-                  <span>⚠️ Register Closed</span>
+                  <span>⚠️ Till Closed</span>
                   <span>• Open Shift</span>
                 </button>
               )}
@@ -520,8 +640,8 @@ export default function PosPage() {
                 <span className="font-mono">${cartSubtotal.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-neutral-400">
-                <span>Tax (Inclusive)</span>
-                <span className="font-mono">$0.00</span>
+                <span>Server / Cashier</span>
+                <span className="font-semibold text-white">{activeStaff.name}</span>
               </div>
               <div className="flex justify-between text-base font-black text-white pt-2 border-t border-neutral-800">
                 <span>Total Due</span>
@@ -545,14 +665,16 @@ export default function PosPage() {
         </section>
       </main>
 
-      {/* CHECKOUT MODAL: 4 TENDER OPTIONS */}
+      {/* CHECKOUT MODAL */}
       {isCheckoutOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
             <div className="flex justify-between items-start border-b border-neutral-800 pb-3">
               <div>
                 <h2 className="text-lg font-bold text-white">Select Tender & Pay</h2>
-                <p className="text-xs text-neutral-400">Total: ${cartSubtotal.toFixed(2)}</p>
+                <p className="text-xs text-neutral-400">
+                  Total: ${cartSubtotal.toFixed(2)} • Cashier: {activeStaff.name}
+                </p>
               </div>
               <button
                 type="button"
@@ -563,7 +685,6 @@ export default function PosPage() {
               </button>
             </div>
 
-            {/* Tender Method Selector: 4 Buttons */}
             <div className="grid grid-cols-4 gap-2">
               {(['cash', 'card', 'qr', 'transfer'] as const).map((method) => (
                 <button
@@ -587,7 +708,6 @@ export default function PosPage() {
               ))}
             </div>
 
-            {/* Tender Method Forms */}
             {paymentMethod === 'cash' ? (
               <div className="space-y-3.5">
                 <div>
@@ -711,6 +831,9 @@ export default function PosPage() {
                   Order #{lastSale.id.slice(0, 8)}
                 </p>
                 <p className="text-[10px] text-neutral-400 print:text-neutral-600">
+                  Cashier: {lastSale.staff_name || activeStaff.name}
+                </p>
+                <p className="text-[10px] text-neutral-400 print:text-neutral-600">
                   {new Date(lastSale.created_at).toLocaleString([], {
                     dateStyle: 'short',
                     timeStyle: 'short',
@@ -766,6 +889,152 @@ export default function PosPage() {
                 className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-neutral-950 transition-colors cursor-pointer"
               >
                 New Order
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: SWITCH CASHIER */}
+      {isSwitchStaffOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-xs w-full p-6 text-center space-y-4 shadow-2xl">
+            <div>
+              <div className="w-10 h-10 mx-auto rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 text-lg mb-2">
+                👤
+              </div>
+              <h3 className="text-base font-bold text-white">Switch Cashier Station</h3>
+              <p className="text-xs text-neutral-400">Enter your 4-digit Staff PIN</p>
+            </div>
+
+            <div className="flex justify-center items-center gap-3 py-1">
+              {[0, 1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className={`h-3 w-3 rounded-full transition-all duration-150 ${
+                    pinInput.length > i
+                      ? 'bg-emerald-400 scale-110 shadow-sm shadow-emerald-500/50'
+                      : 'bg-neutral-800 border border-neutral-700'
+                  }`}
+                />
+              ))}
+            </div>
+
+            {pinError && (
+              <p className="text-xs text-rose-400 bg-rose-950/40 border border-rose-900/60 py-1.5 px-2 rounded-xl">
+                {pinError}
+              </p>
+            )}
+
+            <div className="grid grid-cols-3 gap-2 pt-1">
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
+                <button
+                  key={digit}
+                  type="button"
+                  disabled={isVerifyingPin}
+                  onClick={() => handleKeypadPress(digit, false)}
+                  className="h-12 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-lg font-bold text-white transition cursor-pointer"
+                >
+                  {digit}
+                </button>
+              ))}
+
+              <button
+                type="button"
+                onClick={() => setIsSwitchStaffOpen(false)}
+                className="h-12 rounded-2xl bg-neutral-900 hover:bg-neutral-800 text-neutral-400 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isVerifyingPin}
+                onClick={() => handleKeypadPress('0', false)}
+                className="h-12 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-lg font-bold text-white transition cursor-pointer"
+              >
+                0
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPinInput((prev) => prev.slice(0, -1))}
+                className="h-12 rounded-2xl bg-neutral-900 hover:bg-neutral-800 text-neutral-400 text-base font-bold"
+              >
+                ⌫
+              </button>
+            </div>
+
+            <p className="text-[10px] text-neutral-500 font-mono">
+              Alex: 1234 • Sam: 5678 • Manager: 9999
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* FULL SCREEN BLACKOUT LOCK SCREEN */}
+      {isTerminalLocked && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md p-4">
+          <div className="bg-neutral-900/90 border border-neutral-800 rounded-3xl max-w-xs w-full p-6 text-center space-y-5 shadow-2xl">
+            <div>
+              <div className="w-12 h-12 mx-auto rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center text-xl mb-2">
+                🔒
+              </div>
+              <h3 className="text-lg font-black text-white">Station Locked</h3>
+              <p className="text-xs text-neutral-400">
+                Enter PIN to unlock terminal ({activeStaff.name})
+              </p>
+            </div>
+
+            <div className="flex justify-center items-center gap-3.5 py-1">
+              {[0, 1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className={`h-3.5 w-3.5 rounded-full transition-all duration-150 ${
+                    pinInput.length > i
+                      ? 'bg-emerald-400 scale-110 shadow-sm shadow-emerald-500/50'
+                      : 'bg-neutral-800 border border-neutral-700'
+                  }`}
+                />
+              ))}
+            </div>
+
+            {pinError && (
+              <p className="text-xs text-rose-400 bg-rose-950/40 border border-rose-900/60 py-1.5 px-2 rounded-xl">
+                {pinError}
+              </p>
+            )}
+
+            <div className="grid grid-cols-3 gap-2.5">
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
+                <button
+                  key={digit}
+                  type="button"
+                  disabled={isVerifyingPin}
+                  onClick={() => handleKeypadPress(digit, true)}
+                  className="h-13 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-xl font-bold text-white transition cursor-pointer"
+                >
+                  {digit}
+                </button>
+              ))}
+
+              <div />
+
+              <button
+                type="button"
+                disabled={isVerifyingPin}
+                onClick={() => handleKeypadPress('0', true)}
+                className="h-13 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-xl font-bold text-white transition cursor-pointer"
+              >
+                0
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPinInput((prev) => prev.slice(0, -1))}
+                className="h-13 rounded-2xl bg-neutral-900 hover:bg-neutral-800 text-neutral-400 text-base font-bold flex items-center justify-center"
+              >
+                ⌫
               </button>
             </div>
           </div>
