@@ -57,6 +57,11 @@ const NAV_ITEMS: NavItem[] = [
     href: '/staff',
     icon: '👥',
   },
+  {
+    name: 'Payment Channels',
+    href: '/payments',
+    icon: '💳',
+  },
 ];
 
 export default function Sidebar() {

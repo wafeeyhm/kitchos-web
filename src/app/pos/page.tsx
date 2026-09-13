@@ -13,23 +13,53 @@ interface ProductItem {
   category: string;
   selling_price: number;
   available_portions: number;
-  is_active?: boolean;
+}
+
+interface ModifierOption {
+  name: string;
+  price: number;
 }
 
 interface CartItem {
+  id: string; // unique line ID
   product: ProductItem;
   quantity: number;
+  modifiers: ModifierOption[];
+  notes?: string;
+  unit_total: number;
+}
+
+interface BankAccount {
+  name: string;
+  account_name: string;
+  account_number: string;
+}
+
+interface PaymentMethod {
+  id: string;
+  code: string;
+  name: string;
+  is_enabled: boolean;
+  config: {
+    networks?: string[];
+    qr_title?: string;
+    qr_image_url?: string;
+    instructions?: string;
+    banks?: BankAccount[];
+  };
 }
 
 interface CompletedSale {
   id: string;
   created_at: string;
+  order_type: 'DINE_IN' | 'TAKEAWAY';
   total_amount: number;
   payment_method: string;
   amount_tendered: number;
   change_due: number;
   items: CartItem[];
   staff_name?: string;
+  payment_details?: any;
 }
 
 interface StaffMember {
@@ -38,9 +68,20 @@ interface StaffMember {
   role: string;
 }
 
+// Quick Preset Modifiers
+const PRESET_MODIFIERS: ModifierOption[] = [
+  { name: 'Oat Milk Sub', price: 0.8 },
+  { name: 'Extra Espresso Shot', price: 1.0 },
+  { name: 'Vanilla Syrup', price: 0.5 },
+  { name: 'Caramel Drizzle', price: 0.5 },
+  { name: 'Less Sweet (50%)', price: 0.0 },
+  { name: 'No Sugar (0%)', price: 0.0 },
+  { name: 'Less Ice', price: 0.0 },
+  { name: 'No Ice', price: 0.0 },
+];
+
 export default function PosPage() {
   const supabase = createClient();
-
   useWakeLock(true);
 
   // Active Staff & Lock Screen State
@@ -55,23 +96,33 @@ export default function PosPage() {
   const [pinError, setPinError] = useState<string | null>(null);
   const [isVerifyingPin, setIsVerifyingPin] = useState(false);
 
-  // Products & Catalog State
+  // Products & Categories
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Cart State
+  // Cart & Order State
+  const [orderType, setOrderType] = useState<'DINE_IN' | 'TAKEAWAY'>('DINE_IN');
+  const [orderNotes, setOrderNotes] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
 
-  // Active Shift State
+  // Modifier Customization Modal State
+  const [customizingProduct, setCustomizingProduct] = useState<ProductItem | null>(null);
+  const [activeModifiers, setActiveModifiers] = useState<ModifierOption[]>([]);
+  const [itemNoteInput, setItemNoteInput] = useState('');
+
+  // Shift State
   const [activeShift, setActiveShift] = useState<CashShift | null>(null);
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
 
-  // Checkout Modal State
+  // Dynamic Payment Methods State
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [selectedMethodCode, setSelectedMethodCode] = useState<string>('CASH');
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'qr' | 'transfer'>('cash');
   const [amountTendered, setAmountTendered] = useState<string>('');
+  const [selectedBank, setSelectedBank] = useState<string>('');
+  const [selectedCardNetwork, setSelectedCardNetwork] = useState<string>('VISA');
   const [isProcessingCheckout, setIsProcessingCheckout] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
@@ -79,17 +130,14 @@ export default function PosPage() {
   const [lastSale, setLastSale] = useState<CompletedSale | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
-  // 1. Initial Staff Load from storage or default
+  // 1. Staff Init
   useEffect(() => {
     const saved = localStorage.getItem('kitchos_active_staff');
     if (saved) {
       try {
         setActiveStaff(JSON.parse(saved));
-      } catch (e) {
-        // fallback to default
-      }
+      } catch (e) {}
     } else {
-      // Fetch Alex as default starter
       supabase
         .from('staff_members')
         .select('id, name, role')
@@ -105,7 +153,7 @@ export default function PosPage() {
     }
   }, [supabase]);
 
-  // 2. Fetch Products
+  // 2. Load Products & Portions
   const fetchProducts = useCallback(async () => {
     try {
       setLoadingProducts(true);
@@ -115,13 +163,11 @@ export default function PosPage() {
         .order('name');
 
       if (error) {
-        const { data: prodData, error: prodErr } = await supabase
+        const { data: prodData } = await supabase
           .from('products')
           .select('id, name, category, selling_price')
           .eq('is_active', true)
           .order('name');
-
-        if (prodErr) throw prodErr;
 
         setProducts(
           (prodData || []).map((p: any) => ({
@@ -141,16 +187,16 @@ export default function PosPage() {
         );
       }
     } catch (err: any) {
-      console.error('Error loading products:', err.message);
+      console.error('Error loading menu products:', err.message);
     } finally {
       setLoadingProducts(false);
     }
   }, [supabase]);
 
-  // 3. Fetch Active Register Shift
+  // 3. Load Active Shift
   const fetchActiveShift = useCallback(async () => {
     try {
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('cash_shifts')
         .select('*')
         .eq('status', 'OPEN')
@@ -158,43 +204,50 @@ export default function PosPage() {
         .limit(1)
         .maybeSingle();
 
-      if (error) throw error;
       setActiveShift(data);
     } catch (err: any) {
-      console.error('Error fetching cash shift:', err.message);
+      console.error('Error loading cash shift:', err.message);
+    }
+  }, [supabase]);
+
+  // 4. Load Active Payment Methods
+  const fetchPaymentMethods = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from('payment_methods')
+        .select('*')
+        .eq('is_enabled', true)
+        .order('display_order', { ascending: true });
+
+      if (data && data.length > 0) {
+        setPaymentMethods(data);
+        setSelectedMethodCode(data[0].code);
+        const transfer = data.find((d) => d.code === 'TRANSFER');
+        if (transfer?.config?.banks && transfer.config.banks.length > 0) {
+          setSelectedBank(transfer.config.banks[0].name);
+        }
+      }
+    } catch (err: any) {
+      console.error('Error fetching payment methods:', err.message);
     }
   }, [supabase]);
 
   useEffect(() => {
     fetchProducts();
     fetchActiveShift();
+    fetchPaymentMethods();
+  }, [fetchProducts, fetchActiveShift, fetchPaymentMethods]);
 
-    const inventorySub = supabase
-      .channel(`realtime:pos-inventory-${Math.random()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_items' }, () => {
-        fetchProducts();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'recipe_bom' }, () => {
-        fetchProducts();
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(inventorySub);
-    };
-  }, [fetchProducts, fetchActiveShift, supabase]);
-
-  // Staff Authentication / Unlock with PIN
+  // Keypad Auth for Switching Cashier or Unlocking
   const handleAuthenticatePin = async (pinToTest: string, unlockOnly = false) => {
     setIsVerifyingPin(true);
     setPinError(null);
     try {
-      const { data, error: rpcErr } = await supabase.rpc('authenticate_staff_pin', {
+      const { data, error } = await supabase.rpc('authenticate_staff_pin', {
         p_pin: pinToTest,
       });
 
-      if (rpcErr) throw rpcErr;
-
+      if (error) throw error;
       const staff = data && data[0];
       if (staff) {
         if (!unlockOnly) {
@@ -205,11 +258,11 @@ export default function PosPage() {
         setIsSwitchStaffOpen(false);
         setPinInput('');
       } else {
-        setPinError('Invalid PIN. Please try again.');
+        setPinError('Invalid PIN.');
         setPinInput('');
       }
     } catch (err: any) {
-      setPinError(err.message || 'Authentication error.');
+      setPinError(err.message || 'Verification failed.');
       setPinInput('');
     } finally {
       setIsVerifyingPin(false);
@@ -218,61 +271,99 @@ export default function PosPage() {
 
   const handleKeypadPress = (digit: string, isUnlockScreen: boolean) => {
     if (isVerifyingPin || pinInput.length >= 4) return;
-    const nextPin = pinInput + digit;
-    setPinInput(nextPin);
-    if (nextPin.length === 4) {
-      handleAuthenticatePin(nextPin, isUnlockScreen);
+    const next = pinInput + digit;
+    setPinInput(next);
+    if (next.length === 4) {
+      handleAuthenticatePin(next, isUnlockScreen);
     }
   };
 
-  // Categories list
+  // Categories
   const categories = useMemo(() => {
     const list = Array.from(new Set(products.map((p) => p.category.toUpperCase())));
     return ['ALL', ...list];
   }, [products]);
 
-  // Filtered products
+  // Filtered Products
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
-      const matchesCat = selectedCategory === 'ALL' || p.category.toUpperCase() === selectedCategory;
-      const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchesCat && matchesSearch;
+      const matchCat = selectedCategory === 'ALL' || p.category.toUpperCase() === selectedCategory;
+      const matchSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchCat && matchSearch;
     });
   }, [products, selectedCategory, searchQuery]);
 
-  // Cart calculations
-  const cartSubtotal = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.product.selling_price * item.quantity, 0);
-  }, [cart]);
-
-  const totalCartCount = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.quantity, 0);
-  }, [cart]);
-
-  // Cart actions
-  const handleAddToCart = (product: ProductItem) => {
+  // Add Item to Cart
+  const handleAddToCartDirect = (product: ProductItem) => {
     if (product.available_portions <= 0) return;
 
     setCart((prev) => {
-      const existing = prev.find((item) => item.product.id === product.id);
+      const existing = prev.find(
+        (i) => i.product.id === product.id && i.modifiers.length === 0 && !i.notes
+      );
       if (existing) {
         if (existing.quantity >= product.available_portions) return prev;
-        return prev.map((item) =>
-          item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
-        );
+        return prev.map((i) => (i.id === existing.id ? { ...i, quantity: i.quantity + 1 } : i));
       }
-      return [...prev, { product, quantity: 1 }];
+
+      return [
+        ...prev,
+        {
+          id: `${product.id}-${Date.now()}`,
+          product,
+          quantity: 1,
+          modifiers: [],
+          unit_total: product.selling_price,
+        },
+      ];
     });
   };
 
-  const handleUpdateQuantity = (productId: string, delta: number) => {
+  // Open Modifier Customizer
+  const handleOpenCustomize = (product: ProductItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCustomizingProduct(product);
+    setActiveModifiers([]);
+    setItemNoteInput('');
+  };
+
+  const handleToggleModifier = (mod: ModifierOption) => {
+    setActiveModifiers((prev) =>
+      prev.some((m) => m.name === mod.name)
+        ? prev.filter((m) => m.name !== mod.name)
+        : [...prev, mod]
+    );
+  };
+
+  const handleAddCustomizedToCart = () => {
+    if (!customizingProduct) return;
+
+    const modifierCost = activeModifiers.reduce((sum, m) => sum + m.price, 0);
+    const unitTotal = customizingProduct.selling_price + modifierCost;
+
+    setCart((prev) => [
+      ...prev,
+      {
+        id: `${customizingProduct.id}-${Date.now()}`,
+        product: customizingProduct,
+        quantity: 1,
+        modifiers: [...activeModifiers],
+        notes: itemNoteInput.trim() || undefined,
+        unit_total: unitTotal,
+      },
+    ]);
+
+    setCustomizingProduct(null);
+  };
+
+  const handleUpdateQuantity = (lineId: string, delta: number) => {
     setCart((prev) =>
       prev
         .map((item) => {
-          if (item.product.id === productId) {
-            const newQty = item.quantity + delta;
-            if (newQty > item.product.available_portions) return item;
-            return { ...item, quantity: newQty };
+          if (item.id === lineId) {
+            const nextQty = item.quantity + delta;
+            if (nextQty > item.product.available_portions) return item;
+            return { ...item, quantity: nextQty };
           }
           return item;
         })
@@ -280,11 +371,16 @@ export default function PosPage() {
     );
   };
 
-  const handleClearCart = () => {
-    setCart([]);
-  };
+  // Totals
+  const cartSubtotal = useMemo(() => {
+    return cart.reduce((sum, item) => sum + item.unit_total * item.quantity, 0);
+  }, [cart]);
 
-  // Quick cash tender presets
+  const totalItemCount = useMemo(() => {
+    return cart.reduce((sum, item) => sum + item.quantity, 0);
+  }, [cart]);
+
+  // Cash Presets
   const quickCashPresets = useMemo(() => {
     const total = cartSubtotal;
     const presets = new Set<number>();
@@ -304,73 +400,87 @@ export default function PosPage() {
   }, [cartSubtotal]);
 
   const tenderFloat = parseFloat(amountTendered) || 0;
-  const changeDue = paymentMethod === 'cash' ? Math.max(0, tenderFloat - cartSubtotal) : 0;
-  const isTenderSufficient = paymentMethod !== 'cash' || tenderFloat >= cartSubtotal;
+  const changeDue = selectedMethodCode === 'CASH' ? Math.max(0, tenderFloat - cartSubtotal) : 0;
+  const isTenderSufficient = selectedMethodCode !== 'CASH' || tenderFloat >= cartSubtotal;
 
-  // Process checkout with staff_id tagging
+  // Active method config helper
+  const activeMethodObj = paymentMethods.find((m) => m.code === selectedMethodCode);
+
+  // Complete Order
   const handleProcessCheckout = async () => {
-    if (cart.length === 0) return;
-    if (!isTenderSufficient) {
-      setCheckoutError('Amount tendered is less than the total bill.');
-      return;
-    }
+    if (cart.length === 0 || !isTenderSufficient) return;
 
     setIsProcessingCheckout(true);
     setCheckoutError(null);
 
     try {
-      const finalTendered = paymentMethod === 'cash' ? tenderFloat : cartSubtotal;
-      const finalChange = paymentMethod === 'cash' ? changeDue : 0;
+      const finalTendered = selectedMethodCode === 'CASH' ? tenderFloat : cartSubtotal;
+      const finalChange = selectedMethodCode === 'CASH' ? changeDue : 0;
 
-      // 1. Insert header sale tagged with active cashier ID
+      // Construct payment telemetry details
+      let paymentDetails: any = { channel: selectedMethodCode };
+      if (selectedMethodCode === 'TRANSFER') {
+        paymentDetails.bank = selectedBank;
+      } else if (selectedMethodCode === 'CARD') {
+        paymentDetails.network = selectedCardNetwork;
+      }
+
+      // 1. Insert Sales Header
       const { data: saleData, error: saleErr } = await supabase
         .from('sales')
         .insert({
           total_amount: cartSubtotal,
-          payment_method: paymentMethod,
+          payment_method: selectedMethodCode.toLowerCase(),
           amount_tendered: finalTendered,
           change_due: finalChange,
           status: 'COMPLETED',
           staff_id: activeStaff.id || null,
+          order_type: orderType,
+          notes: orderNotes.trim() || null,
+          payment_details: paymentDetails,
         })
         .select('id, created_at')
         .single();
 
       if (saleErr) throw saleErr;
 
-      // 2. Insert line items
-      const lineItems = cart.map((item) => ({
+      // 2. Insert Sale Items with Modifiers
+      const lineItemsToInsert = cart.map((item) => ({
         sale_id: saleData.id,
         product_id: item.product.id,
         item_name: item.product.name,
         quantity: item.quantity,
-        unit_price: item.product.selling_price,
-        subtotal: item.product.selling_price * item.quantity,
+        unit_price: item.unit_total,
+        subtotal: item.unit_total * item.quantity,
+        modifiers: item.modifiers,
+        notes: item.notes || null,
       }));
 
-      const { error: itemsErr } = await supabase.from('sale_items').insert(lineItems);
+      const { error: itemsErr } = await supabase.from('sale_items').insert(lineItemsToInsert);
       if (itemsErr) throw itemsErr;
 
-      // 3. Receipt slip preparation
+      // 3. Prepare Receipt
       setLastSale({
         id: saleData.id,
         created_at: saleData.created_at,
+        order_type: orderType,
         total_amount: cartSubtotal,
-        payment_method: paymentMethod.toUpperCase(),
+        payment_method: selectedMethodCode,
         amount_tendered: finalTendered,
         change_due: finalChange,
         items: [...cart],
         staff_name: activeStaff.name,
+        payment_details: paymentDetails,
       });
 
-      // 4. Reset checkout & cart states
       setCart([]);
+      setOrderNotes('');
       setIsCheckoutOpen(false);
       setIsReceiptOpen(true);
       fetchProducts();
     } catch (err: any) {
       console.error('Checkout error:', err);
-      setCheckoutError(err.message || 'Transaction failed to process.');
+      setCheckoutError(err.message || 'Transaction could not be completed.');
     } finally {
       setIsProcessingCheckout(false);
     }
@@ -383,17 +493,18 @@ export default function PosPage() {
       </div>
 
       <main className="flex-1 flex overflow-hidden">
-        {/* Catalog Section */}
+        {/* Left Section: Catalog & Ergonomic Controls */}
         <section className="flex-1 flex flex-col min-w-0 border-r border-neutral-800">
           <header className="h-16 px-6 border-b border-neutral-800 bg-neutral-900/50 flex items-center justify-between flex-shrink-0">
             <div>
               <h1 className="text-lg font-bold text-white tracking-tight">POS Terminal</h1>
-              <p className="text-[11px] text-neutral-400">Direct order entry & live portion guards</p>
+              <p className="text-[11px] text-neutral-400">Direct order entry & modifier controls</p>
             </div>
 
             <div className="flex items-center gap-3">
-              {/* Cashier Badge & Switcher */}
               <NetworkStatus />
+
+              {/* Cashier Badge */}
               <div className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-xl p-1">
                 <button
                   type="button"
@@ -407,7 +518,7 @@ export default function PosPage() {
                 >
                   <span className="w-2 h-2 rounded-full bg-emerald-400" />
                   <span className="font-semibold text-white">{activeStaff.name}</span>
-                  <span className="text-[10px] text-neutral-400 bg-neutral-950 px-1.5 py-0.5 rounded uppercase">
+                  <span className="text-[10px] text-neutral-400 bg-neutral-950 px-1.5 py-0.5 rounded uppercase font-mono">
                     {activeStaff.role}
                   </span>
                 </button>
@@ -426,12 +537,12 @@ export default function PosPage() {
                 </button>
               </div>
 
-              {/* Till Status */}
+              {/* Till Float Badge */}
               {activeShift ? (
                 <button
                   type="button"
                   onClick={() => setIsShiftModalOpen(true)}
-                  className="flex items-center gap-2 bg-neutral-950 hover:bg-neutral-800/80 border border-emerald-800/50 px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer shadow-sm"
+                  className="flex items-center gap-2 bg-neutral-950 hover:bg-neutral-800/80 border border-emerald-800/50 px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer"
                 >
                   <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
                   <span className="font-mono text-emerald-400 font-bold">
@@ -445,7 +556,7 @@ export default function PosPage() {
                 <button
                   type="button"
                   onClick={() => setIsShiftModalOpen(true)}
-                  className="flex items-center gap-2 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/60 px-3.5 py-1.5 rounded-xl text-xs text-amber-300 font-semibold transition cursor-pointer shadow-sm"
+                  className="flex items-center gap-2 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/60 px-3.5 py-1.5 rounded-xl text-xs text-amber-300 font-semibold transition cursor-pointer"
                 >
                   <span>⚠️ Till Closed</span>
                   <span>• Open Shift</span>
@@ -462,13 +573,13 @@ export default function PosPage() {
                 placeholder="Search dish or beverage..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
               />
               <button
                 type="button"
                 onClick={() => fetchProducts()}
-                className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-xl text-xs text-neutral-400 transition-colors cursor-pointer"
-                title="Refresh stock"
+                className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-xl text-xs text-neutral-400 transition cursor-pointer"
+                title="Refresh menu"
               >
                 ↻
               </button>
@@ -480,7 +591,7 @@ export default function PosPage() {
                   key={cat}
                   type="button"
                   onClick={() => setSelectedCategory(cat)}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition cursor-pointer ${
                     selectedCategory === cat
                       ? 'bg-emerald-500 text-neutral-950 shadow-md shadow-emerald-950/40'
                       : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-800'
@@ -492,7 +603,7 @@ export default function PosPage() {
             </div>
           </div>
 
-          {/* Product Grid */}
+          {/* Product Grid with Modifier Trigger */}
           <div className="flex-1 overflow-y-auto p-4">
             {loadingProducts ? (
               <div className="flex items-center justify-center h-48 text-neutral-500 text-xs">
@@ -506,21 +617,17 @@ export default function PosPage() {
               <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3.5">
                 {filteredProducts.map((product) => {
                   const isSoldOut = product.available_portions <= 0;
-                  const cartItem = cart.find((i) => i.product.id === product.id);
-                  const inCartQty = cartItem?.quantity || 0;
-                  const remainingAvailable = Math.max(0, product.available_portions - inCartQty);
+                  const inCartCount = cart
+                    .filter((c) => c.product.id === product.id)
+                    .reduce((sum, c) => sum + c.quantity, 0);
 
                   return (
-                    <button
+                    <div
                       key={product.id}
-                      type="button"
-                      disabled={isSoldOut || remainingAvailable <= 0}
-                      onClick={() => handleAddToCart(product)}
-                      className={`relative flex flex-col justify-between p-4 rounded-2xl text-left border transition-all cursor-pointer ${
+                      onClick={() => !isSoldOut && handleAddToCartDirect(product)}
+                      className={`relative flex flex-col justify-between p-4 rounded-2xl border transition text-left cursor-pointer group ${
                         isSoldOut
                           ? 'bg-neutral-900/30 border-neutral-800/40 opacity-50 cursor-not-allowed'
-                          : remainingAvailable <= 0
-                          ? 'bg-neutral-900/40 border-neutral-800 opacity-60'
                           : 'bg-neutral-900/80 hover:bg-neutral-800/90 border-neutral-800 hover:border-neutral-700 active:scale-[0.98]'
                       }`}
                     >
@@ -529,9 +636,9 @@ export default function PosPage() {
                           <span className="text-[10px] uppercase font-bold tracking-wider text-neutral-500">
                             {product.category}
                           </span>
-                          {inCartQty > 0 && (
+                          {inCartCount > 0 && (
                             <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-[10px] font-bold px-1.5 py-0.5 rounded-md">
-                              {inCartQty} in cart
+                              {inCartCount} in order
                             </span>
                           )}
                         </div>
@@ -541,23 +648,35 @@ export default function PosPage() {
                       </div>
 
                       <div className="flex justify-between items-end mt-4 pt-3 border-t border-neutral-800/60">
-                        <span className="font-mono text-sm font-extrabold text-emerald-400">
-                          ${product.selling_price.toFixed(2)}
-                        </span>
+                        <div>
+                          <span className="font-mono text-sm font-extrabold text-emerald-400">
+                            ${product.selling_price.toFixed(2)}
+                          </span>
+                        </div>
 
-                        <span
-                          className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-full border ${
-                            isSoldOut
-                              ? 'bg-rose-950/60 text-rose-400 border-rose-800/50'
-                              : product.available_portions <= 5
-                              ? 'bg-amber-950/60 text-amber-400 border-amber-800/50'
-                              : 'bg-neutral-800/80 text-neutral-400 border-neutral-700/60'
-                          }`}
-                        >
-                          {isSoldOut ? 'Sold Out' : `${remainingAvailable} left`}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {!isSoldOut && (
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenCustomize(product, e)}
+                              className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-[10px] font-bold text-neutral-300 transition cursor-pointer"
+                              title="Add custom modifiers & notes"
+                            >
+                              ⚙️ Mod
+                            </button>
+                          )}
+                          <span
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                              isSoldOut
+                                ? 'bg-rose-950/60 text-rose-400 border-rose-800/50'
+                                : 'bg-neutral-800/80 text-neutral-400 border-neutral-700/60'
+                            }`}
+                          >
+                            {isSoldOut ? 'Sold Out' : `${product.available_portions} left`}
+                          </span>
+                        </div>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -565,90 +684,141 @@ export default function PosPage() {
           </div>
         </section>
 
-        {/* Current Order Ticket / Cart */}
+        {/* Right Section: Active Order Ticket & Ergonomics */}
         <section className="w-96 bg-neutral-900/30 flex flex-col flex-shrink-0">
           <div className="h-16 px-6 border-b border-neutral-800 flex items-center justify-between flex-shrink-0">
             <div className="flex items-center gap-2">
               <h2 className="font-bold text-white text-sm">Active Order</h2>
               <span className="bg-neutral-800 text-neutral-400 font-mono text-[10px] font-bold px-2 py-0.5 rounded-full">
-                {totalCartCount} items
+                {totalItemCount} items
               </span>
             </div>
             {cart.length > 0 && (
               <button
                 type="button"
-                onClick={handleClearCart}
-                className="text-[11px] text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
+                onClick={() => setCart([])}
+                className="text-[11px] text-rose-400 hover:text-rose-300 transition cursor-pointer"
               >
                 Clear
               </button>
             )}
           </div>
 
+          {/* DINE-IN / TAKEAWAY TOGGLE */}
+          <div className="p-3 border-b border-neutral-800 bg-neutral-950/60 flex items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setOrderType('DINE_IN')}
+              className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer border ${
+                orderType === 'DINE_IN'
+                  ? 'bg-emerald-500 text-neutral-950 border-emerald-400 shadow-md shadow-emerald-950/40'
+                  : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:text-white'
+              }`}
+            >
+              <span>🍽️</span>
+              <span>Dine-In</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setOrderType('TAKEAWAY')}
+              className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer border ${
+                orderType === 'TAKEAWAY'
+                  ? 'bg-emerald-500 text-neutral-950 border-emerald-400 shadow-md shadow-emerald-950/40'
+                  : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:text-white'
+              }`}
+            >
+              <span>🛍️</span>
+              <span>Takeaway</span>
+            </button>
+          </div>
+
+          {/* Order Items List with Modifiers */}
           <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
             {cart.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center p-6 text-neutral-500">
                 <span className="text-3xl mb-2">🛒</span>
-                <p className="text-xs">No items in the order ticket yet.</p>
+                <p className="text-xs">No items on current order ticket.</p>
                 <p className="text-[10px] text-neutral-600 mt-1">
-                  Select items from the catalog on the left.
+                  Tap dishes on the catalog to ring up order.
                 </p>
               </div>
             ) : (
               cart.map((item) => (
                 <div
-                  key={item.product.id}
-                  className="p-3 bg-neutral-900/80 border border-neutral-800 rounded-xl flex items-center justify-between gap-3"
+                  key={item.id}
+                  className="p-3 bg-neutral-900/80 border border-neutral-800 rounded-xl space-y-1.5"
                 >
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-xs font-semibold text-white truncate">{item.product.name}</h4>
-                    <p className="font-mono text-[11px] text-neutral-400">
-                      ${item.product.selling_price.toFixed(2)} each
-                    </p>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-xs font-semibold text-white truncate">{item.product.name}</h4>
+                      <p className="font-mono text-[11px] text-neutral-400">
+                        ${item.unit_total.toFixed(2)} each
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-neutral-950 border border-neutral-800 rounded-lg p-1">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateQuantity(item.id, -1)}
+                        className="w-6 h-6 flex items-center justify-center rounded bg-neutral-900 hover:bg-neutral-800 text-neutral-300 text-xs font-bold transition cursor-pointer"
+                      >
+                        -
+                      </button>
+                      <span className="font-mono text-xs font-bold text-white w-4 text-center">
+                        {item.quantity}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={item.quantity >= item.product.available_portions}
+                        onClick={() => handleUpdateQuantity(item.id, 1)}
+                        className="w-6 h-6 flex items-center justify-center rounded bg-neutral-900 hover:bg-neutral-800 disabled:opacity-30 text-neutral-300 text-xs font-bold transition cursor-pointer"
+                      >
+                        +
+                      </button>
+                    </div>
+
+                    <span className="font-mono text-xs font-bold text-emerald-400 w-16 text-right">
+                      ${(item.unit_total * item.quantity).toFixed(2)}
+                    </span>
                   </div>
 
-                  <div className="flex items-center gap-2 bg-neutral-950 border border-neutral-800 rounded-lg p-1">
-                    <button
-                      type="button"
-                      onClick={() => handleUpdateQuantity(item.product.id, -1)}
-                      className="w-6 h-6 flex items-center justify-center rounded bg-neutral-900 hover:bg-neutral-800 text-neutral-300 text-xs font-bold transition-colors cursor-pointer"
-                    >
-                      -
-                    </button>
-                    <span className="font-mono text-xs font-bold text-white w-4 text-center">
-                      {item.quantity}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={item.quantity >= item.product.available_portions}
-                      onClick={() => handleUpdateQuantity(item.product.id, 1)}
-                      className="w-6 h-6 flex items-center justify-center rounded bg-neutral-900 hover:bg-neutral-800 disabled:opacity-30 text-neutral-300 text-xs font-bold transition-colors cursor-pointer"
-                    >
-                      +
-                    </button>
-                  </div>
-
-                  <div className="text-right">
-                    <span className="font-mono text-xs font-bold text-emerald-400">
-                      ${(item.product.selling_price * item.quantity).toFixed(2)}
-                    </span>
-                  </div>
+                  {/* Render Modifiers and Kitchen Prep Notes */}
+                  {(item.modifiers.length > 0 || item.notes) && (
+                    <div className="pt-1.5 border-t border-neutral-800/60 text-[10px] space-y-0.5 font-mono">
+                      {item.modifiers.map((m, idx) => (
+                        <div key={idx} className="flex justify-between text-amber-400/90">
+                          <span>+ {m.name}</span>
+                          {m.price > 0 && <span>+${m.price.toFixed(2)}</span>}
+                        </div>
+                      ))}
+                      {item.notes && (
+                        <p className="text-neutral-400 italic">Note: "{item.notes}"</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))
             )}
           </div>
 
-          <div className="p-5 border-t border-neutral-800 bg-neutral-950/70 space-y-4 flex-shrink-0">
-            <div className="space-y-1.5 text-xs">
+          {/* Ticket Notes & Checkout Button */}
+          <div className="p-4 border-t border-neutral-800 bg-neutral-950/70 space-y-3 flex-shrink-0">
+            <div>
+              <input
+                type="text"
+                placeholder="Order memo / Table # (optional)..."
+                value={orderNotes}
+                onChange={(e) => setOrderNotes(e.target.value)}
+                className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div className="space-y-1 text-xs">
               <div className="flex justify-between text-neutral-400">
-                <span>Subtotal</span>
+                <span>Subtotal ({orderType === 'DINE_IN' ? 'Dine-In' : 'Takeaway'})</span>
                 <span className="font-mono">${cartSubtotal.toFixed(2)}</span>
               </div>
-              <div className="flex justify-between text-neutral-400">
-                <span>Server / Cashier</span>
-                <span className="font-semibold text-white">{activeStaff.name}</span>
-              </div>
-              <div className="flex justify-between text-base font-black text-white pt-2 border-t border-neutral-800">
+              <div className="flex justify-between text-base font-black text-white pt-1 border-t border-neutral-800">
                 <span>Total Due</span>
                 <span className="font-mono text-emerald-400">${cartSubtotal.toFixed(2)}</span>
               </div>
@@ -662,58 +832,148 @@ export default function PosPage() {
                 setCheckoutError(null);
                 setIsCheckoutOpen(true);
               }}
-              className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed font-extrabold text-xs text-neutral-950 tracking-wider uppercase transition-all shadow-lg shadow-emerald-950/40 cursor-pointer"
+              className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed font-extrabold text-xs text-neutral-950 tracking-wider uppercase transition shadow-lg shadow-emerald-950/40 cursor-pointer"
             >
-              Proceed to Pay (${cartSubtotal.toFixed(2)})
+              Checkout (${cartSubtotal.toFixed(2)})
             </button>
           </div>
         </section>
       </main>
 
-      {/* CHECKOUT MODAL */}
+      {/* MODAL: ITEM MODIFIERS & KITCHEN NOTES */}
+      {customizingProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
+            <div>
+              <span className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">
+                Customize Order Item
+              </span>
+              <h3 className="text-lg font-bold text-white">{customizingProduct.name}</h3>
+              <p className="text-xs text-neutral-400">
+                Base price: ${customizingProduct.selling_price.toFixed(2)}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <span className="text-[11px] font-bold uppercase text-neutral-400">
+                Add-ons & Recipe Modifiers
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                {PRESET_MODIFIERS.map((mod) => {
+                  const isSelected = activeModifiers.some((m) => m.name === mod.name);
+                  return (
+                    <button
+                      key={mod.name}
+                      type="button"
+                      onClick={() => handleToggleModifier(mod)}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-500 text-neutral-950 border-emerald-400 font-bold'
+                          : 'bg-neutral-950 text-neutral-300 border-neutral-800 hover:border-neutral-700'
+                      }`}
+                    >
+                      <div className="truncate">{mod.name}</div>
+                      <div className="text-[10px] opacity-80">
+                        {mod.price > 0 ? `+$${mod.price.toFixed(2)}` : 'Free'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-neutral-300 font-medium text-xs mb-1">
+                Kitchen Prep Instruction
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Extra hot, separate bag"
+                value={itemNoteInput}
+                onChange={(e) => setItemNoteInput(e.target.value)}
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white"
+              />
+            </div>
+
+            <div className="pt-2 border-t border-neutral-800 flex justify-between items-center">
+              <div>
+                <span className="text-[10px] text-neutral-400 block">Unit Total:</span>
+                <span className="font-mono text-sm font-bold text-emerald-400">
+                  $
+                  {(
+                    customizingProduct.selling_price +
+                    activeModifiers.reduce((s, m) => s + m.price, 0)
+                  ).toFixed(2)}
+                </span>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomizingProduct(null)}
+                  className="px-3 py-1.5 text-xs text-neutral-400 hover:text-white bg-neutral-800 rounded-xl"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddCustomizedToCart}
+                  className="px-4 py-1.5 font-bold text-xs text-neutral-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition"
+                >
+                  Add to Ticket
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DYNAMIC CHECKOUT MODAL */}
       {isCheckoutOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
             <div className="flex justify-between items-start border-b border-neutral-800 pb-3">
               <div>
-                <h2 className="text-lg font-bold text-white">Select Tender & Pay</h2>
+                <h2 className="text-lg font-bold text-white">Select Payment Channel</h2>
                 <p className="text-xs text-neutral-400">
-                  Total: ${cartSubtotal.toFixed(2)} • Cashier: {activeStaff.name}
+                  Total: ${cartSubtotal.toFixed(2)} • {orderType === 'DINE_IN' ? 'Dine-In' : 'Takeaway'}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsCheckoutOpen(false)}
-                className="text-neutral-400 hover:text-white text-sm font-bold"
+                className="text-neutral-400 hover:text-white text-sm font-bold cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
+            {/* Dynamic Tender Options */}
             <div className="grid grid-cols-4 gap-2">
-              {(['cash', 'card', 'qr', 'transfer'] as const).map((method) => (
+              {paymentMethods.map((m) => (
                 <button
-                  key={method}
+                  key={m.code}
                   type="button"
-                  onClick={() => setPaymentMethod(method)}
-                  className={`py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer border ${
-                    paymentMethod === method
+                  onClick={() => setSelectedMethodCode(m.code)}
+                  className={`py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition border cursor-pointer ${
+                    selectedMethodCode === m.code
                       ? 'bg-emerald-500 text-neutral-950 border-emerald-400 shadow'
-                      : 'bg-neutral-950 text-neutral-400 border-neutral-800 hover:bg-neutral-800 hover:text-white'
+                      : 'bg-neutral-950 text-neutral-400 border-neutral-800 hover:text-white'
                   }`}
                 >
-                  {method === 'cash'
+                  {m.code === 'CASH'
                     ? '💵 Cash'
-                    : method === 'card'
+                    : m.code === 'CARD'
                     ? '💳 Card'
-                    : method === 'qr'
+                    : m.code === 'QR'
                     ? '📱 QR'
                     : '🏦 Transfer'}
                 </button>
               ))}
             </div>
 
-            {paymentMethod === 'cash' ? (
+            {/* CASH TENDER BODY */}
+            {selectedMethodCode === 'CASH' && (
               <div className="space-y-3.5">
                 <div>
                   <label className="block text-xs font-medium text-neutral-300 mb-1.5">
@@ -755,29 +1015,106 @@ export default function PosPage() {
                   </span>
                 </div>
               </div>
-            ) : paymentMethod === 'card' ? (
-              <div className="p-6 bg-neutral-950 border border-neutral-800 rounded-xl text-center space-y-2">
-                <span className="text-3xl">💳</span>
-                <p className="text-xs text-neutral-300 font-medium">Terminal Reader Ready</p>
-                <p className="text-[10px] text-neutral-500">
-                  Swipe, insert chip, or tap customer card on EDC terminal.
-                </p>
-              </div>
-            ) : paymentMethod === 'transfer' ? (
-              <div className="p-6 bg-neutral-950 border border-neutral-800 rounded-xl text-center space-y-2">
-                <span className="text-3xl">🏦</span>
-                <p className="text-xs text-neutral-300 font-medium">Bank / Wire Transfer</p>
-                <p className="text-[10px] text-neutral-500">
-                  Verify instant transfer confirmation receipt from customer before completing.
-                </p>
-              </div>
-            ) : (
-              <div className="p-6 bg-neutral-950 border border-neutral-800 rounded-xl text-center space-y-2">
-                <div className="w-24 h-24 mx-auto bg-white rounded-lg flex items-center justify-center text-black font-mono text-xs font-bold">
-                  [ QR CODE ]
+            )}
+
+            {/* CARD TENDER BODY */}
+            {selectedMethodCode === 'CARD' && (
+              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3 text-center">
+                <span className="text-3xl block">💳</span>
+                <p className="text-xs text-neutral-300 font-medium">Card EDC Terminal</p>
+
+                <div className="space-y-1 text-left pt-2 border-t border-neutral-800">
+                  <span className="text-[10px] font-bold text-neutral-400 uppercase">
+                    Select Card Network:
+                  </span>
+                  <div className="flex gap-2">
+                    {(activeMethodObj?.config?.networks || ['VISA', 'MASTERCARD', 'AMEX']).map(
+                      (net) => (
+                        <button
+                          key={net}
+                          type="button"
+                          onClick={() => setSelectedCardNetwork(net)}
+                          className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                            selectedCardNetwork === net
+                              ? 'bg-emerald-500 text-neutral-950 border-emerald-400'
+                              : 'bg-neutral-900 text-neutral-400 border-neutral-800'
+                          }`}
+                        >
+                          {net}
+                        </button>
+                      )
+                    )}
+                  </div>
                 </div>
-                <p className="text-xs text-neutral-300 font-medium">Scan to Pay via E-Wallet</p>
-                <p className="text-[10px] text-neutral-500">Waiting for webhook transfer confirmation...</p>
+              </div>
+            )}
+
+            {/* QR / E-WALLET BODY */}
+            {selectedMethodCode === 'QR' && (
+              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl text-center space-y-3">
+                <div className="w-36 h-36 mx-auto bg-white p-2 rounded-xl flex items-center justify-center">
+                  <img
+                    src={
+                      activeMethodObj?.config?.qr_image_url ||
+                      'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=KITCHOS-MERCHANT-PAY'
+                    }
+                    alt="Scan to Pay QR"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-white font-bold">
+                    {activeMethodObj?.config?.qr_title || 'Scan Merchant QR'}
+                  </p>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">
+                    {activeMethodObj?.config?.instructions ||
+                      'Scan using your banking or digital wallet app.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* BANK TRANSFER BODY */}
+            {selectedMethodCode === 'TRANSFER' && (
+              <div className="space-y-3">
+                <span className="text-[10px] font-bold text-neutral-400 uppercase">
+                  Select Destination Bank Account:
+                </span>
+                <div className="space-y-2">
+                  {(activeMethodObj?.config?.banks || []).map((bank) => {
+                    const isSelected = selectedBank === bank.name;
+                    return (
+                      <div
+                        key={bank.name}
+                        onClick={() => setSelectedBank(bank.name)}
+                        className={`p-3 rounded-xl border text-xs cursor-pointer flex justify-between items-center transition ${
+                          isSelected
+                            ? 'bg-emerald-950/40 border-emerald-500 text-white'
+                            : 'bg-neutral-950 border-neutral-800 text-neutral-400'
+                        }`}
+                      >
+                        <div>
+                          <p className="font-bold text-white">{bank.name}</p>
+                          <p className="font-mono text-[11px] text-emerald-400">
+                            #{bank.account_number}
+                          </p>
+                          <p className="text-[10px] text-neutral-500">Name: {bank.account_name}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(bank.account_number);
+                            alert(`Copied ${bank.name} account number!`);
+                          }}
+                          className="bg-neutral-800 hover:bg-neutral-700 text-white text-[10px] px-2 py-1 rounded transition"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -787,12 +1124,12 @@ export default function PosPage() {
               </div>
             )}
 
-            <div className="flex gap-2.5 pt-2">
+            <div className="flex gap-2.5 pt-2 border-t border-neutral-800">
               <button
                 type="button"
                 disabled={isProcessingCheckout}
                 onClick={() => setIsCheckoutOpen(false)}
-                className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-neutral-400 hover:text-white bg-neutral-800 hover:bg-neutral-700 transition-colors"
+                className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-neutral-400 hover:text-white bg-neutral-800 transition cursor-pointer"
               >
                 Cancel
               </button>
@@ -800,28 +1137,28 @@ export default function PosPage() {
                 type="button"
                 disabled={isProcessingCheckout || !isTenderSufficient}
                 onClick={handleProcessCheckout}
-                className="flex-2 py-2.5 rounded-xl text-xs font-bold text-neutral-950 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 transition-colors cursor-pointer"
+                className="flex-2 py-2.5 rounded-xl text-xs font-bold text-neutral-950 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 transition cursor-pointer"
               >
-                {isProcessingCheckout ? 'Finalizing...' : 'Confirm & Complete'}
+                {isProcessingCheckout ? 'Finalizing...' : 'Complete Payment'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* THERMAL RECEIPT SLIP MODAL */}
+      {/* THERMAL RECEIPT SLIP WITH MODIFIERS & ORDER TYPE */}
       {isReceiptOpen && lastSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-5 print:shadow-none print:border-none print:m-0 print:p-0">
             <div className="flex justify-between items-start border-b border-neutral-800 pb-3 print:hidden">
               <div>
                 <h3 className="text-base font-bold text-white">Payment Successful</h3>
-                <p className="text-[11px] text-neutral-400">Transaction recorded to ledger.</p>
+                <p className="text-[11px] text-neutral-400">Thermal slip ready for reprint</p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsReceiptOpen(false)}
-                className="text-neutral-400 hover:text-white text-sm font-bold"
+                className="text-neutral-400 hover:text-white text-sm font-bold cursor-pointer"
               >
                 ✕
               </button>
@@ -832,11 +1169,11 @@ export default function PosPage() {
                 <h4 className="font-extrabold text-sm text-white tracking-widest uppercase print:text-black">
                   KITCHOS RESTAURANT
                 </h4>
-                <p className="text-[10px] text-neutral-400 print:text-neutral-600">
-                  Order #{lastSale.id.slice(0, 8)}
+                <p className="text-[10px] text-neutral-400 print:text-neutral-600 font-bold uppercase">
+                  *** {lastSale.order_type === 'DINE_IN' ? 'DINE-IN' : 'TAKEAWAY'} ***
                 </p>
                 <p className="text-[10px] text-neutral-400 print:text-neutral-600">
-                  Cashier: {lastSale.staff_name || activeStaff.name}
+                  Ticket #{lastSale.id.slice(0, 8)} • Cashier: {lastSale.staff_name}
                 </p>
                 <p className="text-[10px] text-neutral-400 print:text-neutral-600">
                   {new Date(lastSale.created_at).toLocaleString([], {
@@ -846,15 +1183,30 @@ export default function PosPage() {
                 </p>
               </div>
 
+              {/* Items with modifiers */}
               <div className="space-y-1.5 py-1 border-b border-dashed border-neutral-800">
                 {lastSale.items.map((item, idx) => (
-                  <div key={idx} className="flex justify-between text-[11px]">
-                    <span className="truncate pr-2">
-                      {item.quantity}x {item.product.name}
-                    </span>
-                    <span className="font-bold">
-                      ${(item.product.selling_price * item.quantity).toFixed(2)}
-                    </span>
+                  <div key={idx} className="text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="truncate pr-2 font-bold">
+                        {item.quantity}x {item.product.name}
+                      </span>
+                      <span className="font-bold font-mono">
+                        ${(item.unit_total * item.quantity).toFixed(2)}
+                      </span>
+                    </div>
+
+                    {/* Modifiers printout */}
+                    {item.modifiers.map((m, mIdx) => (
+                      <div key={mIdx} className="text-[10px] text-neutral-400 pl-3">
+                        + {m.name} {m.price > 0 ? `($${m.price.toFixed(2)})` : ''}
+                      </div>
+                    ))}
+                    {item.notes && (
+                      <div className="text-[10px] text-neutral-400 italic pl-3">
+                        "{item.notes}"
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -865,7 +1217,15 @@ export default function PosPage() {
                   <span>${lastSale.total_amount.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-neutral-400 print:text-neutral-600">
-                  <span>Tender ({lastSale.payment_method}):</span>
+                  <span>Tender:</span>
+                  <span className="uppercase">
+                    {lastSale.payment_method}
+                    {lastSale.payment_details?.bank && ` (${lastSale.payment_details.bank})`}
+                    {lastSale.payment_details?.network && ` (${lastSale.payment_details.network})`}
+                  </span>
+                </div>
+                <div className="flex justify-between text-neutral-400 print:text-neutral-600">
+                  <span>Tendered:</span>
                   <span>${lastSale.amount_tendered.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-neutral-400 print:text-neutral-600">
@@ -883,7 +1243,7 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => window.print()}
-                className="flex-1 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-xs font-bold text-white flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-xs font-bold text-white flex items-center justify-center gap-1.5 transition cursor-pointer"
               >
                 <span>🖨️</span>
                 <span>Print Receipt</span>
@@ -891,7 +1251,7 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => setIsReceiptOpen(false)}
-                className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-neutral-950 transition-colors cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-neutral-950 transition cursor-pointer"
               >
                 New Order
               </button>
@@ -969,10 +1329,6 @@ export default function PosPage() {
                 ⌫
               </button>
             </div>
-
-            <p className="text-[10px] text-neutral-500 font-mono">
-              Alex: 1234 • Sam: 5678 • Manager: 9999
-            </p>
           </div>
         </div>
       )}
@@ -1046,7 +1402,7 @@ export default function PosPage() {
         </div>
       )}
 
-      {/* SHIFT RECONCILIATION MODAL */}
+      {/* SHIFT FLOAT MODAL */}
       <ShiftModal
         isOpen={isShiftModalOpen}
         onClose={() => setIsShiftModalOpen(false)}
