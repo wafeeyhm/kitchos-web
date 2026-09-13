@@ -58,6 +58,7 @@ interface CompletedSale {
   id: string;
   created_at: string;
   order_type: 'DINE_IN' | 'TAKEAWAY';
+  is_rush: boolean;
   total_amount: number;
   payment_method: string;
   amount_tendered: number;
@@ -125,6 +126,7 @@ export default function PosPage() {
 
   // Cart & Order State
   const [orderType, setOrderType] = useState<'DINE_IN' | 'TAKEAWAY'>('DINE_IN');
+  const [isRush, setIsRush] = useState<boolean>(false);
   const [orderNotes, setOrderNotes] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
 
@@ -168,9 +170,10 @@ export default function PosPage() {
       items: cart,
       subtotal: cartSubtotal,
       orderType,
+      isRush,
       cashierName: activeStaff.name,
     });
-  }, [cart, cartSubtotal, orderType, activeStaff.name, supabase]);
+  }, [cart, cartSubtotal, orderType, isRush, activeStaff.name, supabase]);
 
   // 1. Initialize Active Staff
   useEffect(() => {
@@ -421,6 +424,7 @@ export default function PosPage() {
 
   const handleClearCart = () => {
     setCart([]);
+    setIsRush(false);
     broadcastToCfd(supabase, 'CLEAR_CART', {});
   };
 
@@ -459,6 +463,7 @@ export default function PosPage() {
     broadcastToCfd(supabase, 'CHECKOUT_START', {
       subtotal: cartSubtotal,
       orderType,
+      isRush,
       paymentMethod: selectedMethodCode,
       paymentDetails: {
         channel: selectedMethodCode,
@@ -548,7 +553,7 @@ export default function PosPage() {
         paymentDetails.reference_id = finalRef;
       }
 
-      // 1. Insert Sales Header
+      // 1. Insert Sales Header (with is_rush, kds_status, and staff tracking)
       const { data: saleData, error: saleErr } = await supabase
         .from('sales')
         .insert({
@@ -557,6 +562,8 @@ export default function PosPage() {
           amount_tendered: finalTendered,
           change_due: finalChange,
           status: 'COMPLETED',
+          kds_status: 'QUEUED',
+          is_rush: isRush,
           staff_id: activeStaff.id || null,
           order_type: orderType,
           notes: orderNotes.trim() || null,
@@ -599,6 +606,7 @@ export default function PosPage() {
         id: saleData.id,
         created_at: saleData.created_at,
         order_type: orderType,
+        is_rush: isRush,
         total_amount: cartSubtotal,
         payment_method: selectedMethodCode,
         amount_tendered: finalTendered,
@@ -609,9 +617,11 @@ export default function PosPage() {
         payment_details: paymentDetails,
       });
 
+      // Reset cart and modifiers
       setCart([]);
       setOrderNotes('');
       setTransactionRef('');
+      setIsRush(false);
       setIsCheckoutOpen(false);
       setIsReceiptOpen(true);
       fetchProducts();
@@ -841,7 +851,7 @@ export default function PosPage() {
             )}
           </div>
 
-          {/* DINE-IN / TAKEAWAY TOGGLE */}
+          {/* DINE-IN / TAKEAWAY & RUSH TOGGLE */}
           <div className="p-3 border-b border-neutral-800 bg-neutral-950/60 flex items-center gap-2 flex-shrink-0">
             <button
               type="button"
@@ -866,6 +876,19 @@ export default function PosPage() {
             >
               <span>🛍️</span>
               <span>Takeaway</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsRush(!isRush)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
+                isRush
+                  ? 'bg-rose-600 text-white border-rose-500 shadow-md shadow-rose-950/60 animate-pulse'
+                  : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:text-white'
+              }`}
+              title="Mark order as high priority rush for kitchen"
+            >
+              <span>🔥</span>
+              <span>Rush</span>
             </button>
           </div>
 
@@ -952,7 +975,10 @@ export default function PosPage() {
 
             <div className="space-y-1 text-xs">
               <div className="flex justify-between text-neutral-400">
-                <span>Subtotal ({orderType === 'DINE_IN' ? 'Dine-In' : 'Takeaway'})</span>
+                <span>
+                  Subtotal ({orderType === 'DINE_IN' ? 'Dine-In' : 'Takeaway'})
+                  {isRush && <span className="text-rose-400 font-bold ml-1">• RUSH</span>}
+                </span>
                 <span className="font-mono">${cartSubtotal.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-base font-black text-white pt-1 border-t border-neutral-800">
@@ -1070,6 +1096,7 @@ export default function PosPage() {
                 <h2 className="text-lg font-bold text-white">Select Payment Channel</h2>
                 <p className="text-xs text-neutral-400">
                   Total: ${cartSubtotal.toFixed(2)} • {orderType === 'DINE_IN' ? 'Dine-In' : 'Takeaway'}
+                  {isRush && <span className="text-rose-400 font-bold ml-1">(RUSH)</span>}
                 </p>
               </div>
               <button
@@ -1395,6 +1422,11 @@ export default function PosPage() {
                 <p className="text-[10px] text-neutral-400 print:text-neutral-600 font-bold uppercase mt-0.5">
                   *** {lastSale.order_type === 'DINE_IN' ? 'DINE-IN' : 'TAKEAWAY'} ***
                 </p>
+                {lastSale.is_rush && (
+                  <p className="text-[10px] text-rose-400 print:text-black font-extrabold uppercase">
+                    *** PRIORITY RUSH ORDER ***
+                  </p>
+                )}
                 <p className="text-[10px] text-neutral-400 print:text-neutral-600">
                   Ticket #{lastSale.id.slice(0, 8)} • Cashier: {lastSale.staff_name}
                 </p>
