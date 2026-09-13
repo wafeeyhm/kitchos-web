@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
+import { useWakeLock } from '@/hooks/useWakeLock';
+import NetworkStatus from '@/components/NetworkStatus';
 
 interface SaleItem {
   id: string;
@@ -63,6 +65,9 @@ function playKitchenChime() {
 
 export default function KdsPage() {
   const supabase = createClient();
+
+  // Keep kitchen monitor screen awake indefinitely
+  useWakeLock(true);
 
   const [tickets, setTickets] = useState<KitchenTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -259,6 +264,7 @@ export default function KdsPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            <NetworkStatus />
             {/* Station Filter Chips */}
             <div className="flex bg-neutral-950 p-1 rounded-xl border border-neutral-800 text-xs font-semibold">
               <button

@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
 import ShiftModal, { CashShift } from '@/components/ShiftModal';
+import { useWakeLock } from '@/hooks/useWakeLock';
+import NetworkStatus from '@/components/NetworkStatus';
 
 interface ProductItem {
   id: string;
@@ -38,6 +40,8 @@ interface StaffMember {
 
 export default function PosPage() {
   const supabase = createClient();
+
+  useWakeLock(true);
 
   // Active Staff & Lock Screen State
   const [activeStaff, setActiveStaff] = useState<StaffMember>({
@@ -389,6 +393,7 @@ export default function PosPage() {
 
             <div className="flex items-center gap-3">
               {/* Cashier Badge & Switcher */}
+              <NetworkStatus />
               <div className="flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-xl p-1">
                 <button
                   type="button"
