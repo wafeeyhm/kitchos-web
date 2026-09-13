@@ -8,6 +8,7 @@ interface NavItem {
   href: string;
   icon: string;
   badge?: string;
+  isExternalWindow?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -26,6 +27,13 @@ const NAV_ITEMS: NavItem[] = [
     href: '/kds',
     icon: '🍳',
     badge: 'Live',
+  },
+  {
+    name: 'Customer Display',
+    href: '/display',
+    icon: '🪞',
+    isExternalWindow: true,
+    badge: 'CFD',
   },
   {
     name: 'Menu & Catalog',
@@ -67,6 +75,11 @@ const NAV_ITEMS: NavItem[] = [
 export default function Sidebar() {
   const pathname = usePathname();
 
+  const handleOpenCfdWindow = (e: React.MouseEvent, href: string) => {
+    e.preventDefault();
+    window.open(href, 'KitchOS_CFD', 'width=1024,height=768,menubar=no,toolbar=no,location=no');
+  };
+
   return (
     <aside className="w-64 h-screen bg-neutral-950 border-r border-neutral-800 flex flex-col justify-between select-none">
       <div>
@@ -94,6 +107,29 @@ export default function Sidebar() {
               item.href === '/'
                 ? pathname === '/'
                 : pathname.startsWith(item.href);
+
+            if (item.isExternalWindow) {
+              return (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  onClick={(e) => handleOpenCfdWindow(e, item.href)}
+                  className="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/60"
+                  title="Launch Customer Display in secondary window"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="text-base group-hover:scale-110 transition-transform">
+                      {item.icon}
+                    </span>
+                    <span>{item.name}</span>
+                  </div>
+
+                  <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border bg-neutral-900 text-neutral-400 border-neutral-800">
+                    ↗ Pop-out
+                  </span>
+                </a>
+              );
+            }
 
             return (
               <Link

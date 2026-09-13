@@ -74,7 +74,6 @@ interface StaffMember {
   role: string;
 }
 
-// Quick Preset Modifiers
 const PRESET_MODIFIERS: ModifierOption[] = [
   { name: 'Oat Milk Sub', price: 0.8 },
   { name: 'Extra Espresso Shot', price: 1.0 },
@@ -85,6 +84,22 @@ const PRESET_MODIFIERS: ModifierOption[] = [
   { name: 'Less Ice', price: 0.0 },
   { name: 'No Ice', price: 0.0 },
 ];
+
+function broadcastToCfd(supabase: any, type: string, payload: any) {
+  try {
+    const local = new BroadcastChannel('kitchos_cfd_channel');
+    local.postMessage({ type, ...payload });
+    local.close();
+
+    supabase.channel('kitchos_cfd_realtime').send({
+      type: 'broadcast',
+      event: 'cfd_event',
+      payload: { type, ...payload },
+    });
+  } catch (err) {
+    console.warn('CFD broadcast error:', err);
+  }
+}
 
 export default function PosPage() {
   const supabase = createClient();
@@ -102,7 +117,7 @@ export default function PosPage() {
   const [pinError, setPinError] = useState<string | null>(null);
   const [isVerifyingPin, setIsVerifyingPin] = useState(false);
 
-  // Products & Categories
+  // Products & Catalog State
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -113,12 +128,12 @@ export default function PosPage() {
   const [orderNotes, setOrderNotes] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
 
-  // Modifier Customizer State
+  // Modifier Customizer Modal State
   const [customizingProduct, setCustomizingProduct] = useState<ProductItem | null>(null);
   const [activeModifiers, setActiveModifiers] = useState<ModifierOption[]>([]);
   const [itemNoteInput, setItemNoteInput] = useState('');
 
-  // Shift State
+  // Shift Float State
   const [activeShift, setActiveShift] = useState<CashShift | null>(null);
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
 
@@ -138,7 +153,26 @@ export default function PosPage() {
   const [lastSale, setLastSale] = useState<CompletedSale | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
-  // 1. Staff Init
+  // Cart Subtotals
+  const cartSubtotal = useMemo(() => {
+    return cart.reduce((sum, item) => sum + item.unit_total * item.quantity, 0);
+  }, [cart]);
+
+  const totalItemCount = useMemo(() => {
+    return cart.reduce((sum, item) => sum + item.quantity, 0);
+  }, [cart]);
+
+  // CFD Live Sync: Push order changes to secondary customer display
+  useEffect(() => {
+    broadcastToCfd(supabase, 'CART_UPDATE', {
+      items: cart,
+      subtotal: cartSubtotal,
+      orderType,
+      cashierName: activeStaff.name,
+    });
+  }, [cart, cartSubtotal, orderType, activeStaff.name, supabase]);
+
+  // 1. Initialize Active Staff
   useEffect(() => {
     const saved = localStorage.getItem('kitchos_active_staff');
     if (saved) {
@@ -201,7 +235,7 @@ export default function PosPage() {
     }
   }, [supabase]);
 
-  // 3. Load Active Shift
+  // 3. Load Active Register Shift
   const fetchActiveShift = useCallback(async () => {
     try {
       const { data } = await supabase
@@ -218,7 +252,7 @@ export default function PosPage() {
     }
   }, [supabase]);
 
-  // 4. Load Active Payment Methods
+  // 4. Load Active Payment Methods & Providers
   const fetchPaymentMethods = useCallback(async () => {
     try {
       const { data } = await supabase
@@ -231,13 +265,11 @@ export default function PosPage() {
         setPaymentMethods(data);
         setSelectedMethodCode(data[0].code);
 
-        // Set default bank
         const transfer = data.find((d) => d.code === 'TRANSFER');
         if (transfer?.config?.banks && transfer.config.banks.length > 0) {
           setSelectedBank(transfer.config.banks[0].name);
         }
 
-        // Set default Brunei QR provider
         const qr = data.find((d) => d.code === 'QR');
         if (qr?.config?.providers && qr.config.providers.length > 0) {
           setSelectedQrProvider(qr.config.providers[0]);
@@ -254,7 +286,7 @@ export default function PosPage() {
     fetchPaymentMethods();
   }, [fetchProducts, fetchActiveShift, fetchPaymentMethods]);
 
-  // Authenticate PIN
+  // Keypad Authentication for Cashier Switching and Station Unlocking
   const handleAuthenticatePin = async (pinToTest: string, unlockOnly = false) => {
     setIsVerifyingPin(true);
     setPinError(null);
@@ -309,7 +341,7 @@ export default function PosPage() {
     });
   }, [products, selectedCategory, searchQuery]);
 
-  // Direct Add
+  // Quick Direct Add
   const handleAddToCartDirect = (product: ProductItem) => {
     if (product.available_portions <= 0) return;
 
@@ -335,7 +367,7 @@ export default function PosPage() {
     });
   };
 
-  // Open Modifiers Customizer
+  // Open Custom Modifiers
   const handleOpenCustomize = (product: ProductItem, e: React.MouseEvent) => {
     e.stopPropagation();
     setCustomizingProduct(product);
@@ -387,14 +419,10 @@ export default function PosPage() {
     );
   };
 
-  // Subtotals
-  const cartSubtotal = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.unit_total * item.quantity, 0);
-  }, [cart]);
-
-  const totalItemCount = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.quantity, 0);
-  }, [cart]);
+  const handleClearCart = () => {
+    setCart([]);
+    broadcastToCfd(supabase, 'CLEAR_CART', {});
+  };
 
   // Quick cash tender presets
   const quickCashPresets = useMemo(() => {
@@ -421,11 +449,68 @@ export default function PosPage() {
 
   const activeMethodObj = paymentMethods.find((m) => m.code === selectedMethodCode);
 
+  // Open Checkout Modal & Broadcast to Customer Facing Display
+  const handleOpenCheckout = () => {
+    setAmountTendered(cartSubtotal.toFixed(2));
+    setTransactionRef('');
+    setCheckoutError(null);
+    setIsCheckoutOpen(true);
+
+    broadcastToCfd(supabase, 'CHECKOUT_START', {
+      subtotal: cartSubtotal,
+      orderType,
+      paymentMethod: selectedMethodCode,
+      paymentDetails: {
+        channel: selectedMethodCode,
+        qr_provider: selectedQrProvider?.name,
+        qr_image_url: selectedQrProvider?.qr_image_url,
+        instructions: selectedQrProvider?.instructions,
+        merchant_id: selectedQrProvider?.merchant_id,
+        bank: selectedBank,
+        network: selectedCardNetwork,
+      },
+    });
+  };
+
+  // Select Payment Channel & Sync with Customer Screen
+  const handleSelectPaymentMethod = (code: string) => {
+    setSelectedMethodCode(code);
+    setTransactionRef('');
+
+    broadcastToCfd(supabase, 'PAYMENT_METHOD_CHANGE', {
+      paymentMethod: code,
+      paymentDetails: {
+        channel: code,
+        qr_provider: selectedQrProvider?.name,
+        qr_image_url: selectedQrProvider?.qr_image_url,
+        instructions: selectedQrProvider?.instructions,
+        merchant_id: selectedQrProvider?.merchant_id,
+        bank: selectedBank,
+        network: selectedCardNetwork,
+      },
+    });
+  };
+
+  // Select QR Provider & Sync with Customer Screen
+  const handleSelectQrProvider = (provider: QrProvider) => {
+    setSelectedQrProvider(provider);
+
+    broadcastToCfd(supabase, 'PAYMENT_METHOD_CHANGE', {
+      paymentMethod: 'QR',
+      paymentDetails: {
+        channel: 'QR',
+        qr_provider: provider.name,
+        qr_image_url: provider.qr_image_url,
+        instructions: provider.instructions,
+        merchant_id: provider.merchant_id,
+      },
+    });
+  };
+
   // Complete Order
   const handleProcessCheckout = async () => {
     if (cart.length === 0 || !isTenderSufficient) return;
 
-    // Soft validation for reference number on electronic tenders
     if (
       (selectedMethodCode === 'QR' ||
         selectedMethodCode === 'CARD' ||
@@ -448,7 +533,6 @@ export default function PosPage() {
       const finalTendered = selectedMethodCode === 'CASH' ? tenderFloat : cartSubtotal;
       const finalChange = selectedMethodCode === 'CASH' ? changeDue : 0;
 
-      // Construct payment details telemetry
       let paymentDetails: any = { channel: selectedMethodCode };
       if (selectedMethodCode === 'TRANSFER') {
         paymentDetails.bank = selectedBank;
@@ -499,7 +583,18 @@ export default function PosPage() {
       const { error: itemsErr } = await supabase.from('sale_items').insert(lineItemsToInsert);
       if (itemsErr) throw itemsErr;
 
-      // 3. Prepare Receipt
+      // 3. Broadcast Completion to Customer Facing Display
+      broadcastToCfd(supabase, 'SALE_COMPLETED', {
+        completedSale: {
+          id: saleData.id,
+          total: cartSubtotal,
+          amountTendered: finalTendered,
+          changeDue: finalChange,
+          referenceNumber: finalRef,
+        },
+      });
+
+      // 4. Prepare Receipt
       setLastSale({
         id: saleData.id,
         created_at: saleData.created_at,
@@ -738,7 +833,7 @@ export default function PosPage() {
             {cart.length > 0 && (
               <button
                 type="button"
-                onClick={() => setCart([])}
+                onClick={handleClearCart}
                 className="text-[11px] text-rose-400 hover:text-rose-300 transition cursor-pointer"
               >
                 Clear
@@ -869,12 +964,7 @@ export default function PosPage() {
             <button
               type="button"
               disabled={cart.length === 0}
-              onClick={() => {
-                setAmountTendered(cartSubtotal.toFixed(2));
-                setTransactionRef('');
-                setCheckoutError(null);
-                setIsCheckoutOpen(true);
-              }}
+              onClick={handleOpenCheckout}
               className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed font-extrabold text-xs text-neutral-950 tracking-wider uppercase transition shadow-lg shadow-emerald-950/40 cursor-pointer"
             >
               Checkout (${cartSubtotal.toFixed(2)})
@@ -971,7 +1061,7 @@ export default function PosPage() {
         </div>
       )}
 
-      {/* DYNAMIC CHECKOUT MODAL WITH TRANSACTION REFERENCE TRACKING */}
+      {/* DYNAMIC CHECKOUT MODAL */}
       {isCheckoutOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
@@ -997,10 +1087,7 @@ export default function PosPage() {
                 <button
                   key={m.code}
                   type="button"
-                  onClick={() => {
-                    setSelectedMethodCode(m.code);
-                    setTransactionRef('');
-                  }}
+                  onClick={() => handleSelectPaymentMethod(m.code)}
                   className={`py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition border cursor-pointer ${
                     selectedMethodCode === m.code
                       ? 'bg-emerald-500 text-neutral-950 border-emerald-400 shadow'
@@ -1076,7 +1163,16 @@ export default function PosPage() {
                         <button
                           key={net}
                           type="button"
-                          onClick={() => setSelectedCardNetwork(net)}
+                          onClick={() => {
+                            setSelectedCardNetwork(net);
+                            broadcastToCfd(supabase, 'PAYMENT_METHOD_CHANGE', {
+                              paymentMethod: 'CARD',
+                              paymentDetails: {
+                                channel: 'CARD',
+                                network: net,
+                              },
+                            });
+                          }}
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
                             selectedCardNetwork === net
                               ? 'bg-emerald-500 text-neutral-950 border-emerald-400'
@@ -1113,7 +1209,6 @@ export default function PosPage() {
             {/* 3. MULTI-PROVIDER BRUNEI QR BODY */}
             {selectedMethodCode === 'QR' && (
               <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3.5">
-                {/* Provider Selector Tabs */}
                 <div>
                   <span className="text-[10px] uppercase font-bold text-neutral-400 block mb-1.5">
                     Select Customer QR Provider:
@@ -1125,7 +1220,7 @@ export default function PosPage() {
                         <button
                           key={p.name}
                           type="button"
-                          onClick={() => setSelectedQrProvider(p)}
+                          onClick={() => handleSelectQrProvider(p)}
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap border transition cursor-pointer ${
                             isSelected
                               ? 'bg-emerald-500 text-neutral-950 border-emerald-400'
@@ -1139,7 +1234,6 @@ export default function PosPage() {
                   </div>
                 </div>
 
-                {/* Selected Provider QR Display */}
                 {selectedQrProvider && (
                   <div className="flex items-center gap-3 p-3 bg-neutral-900/60 rounded-xl border border-neutral-800">
                     <div className="w-24 h-24 bg-white p-1 rounded-lg flex-shrink-0 flex items-center justify-center">
@@ -1161,7 +1255,6 @@ export default function PosPage() {
                   </div>
                 )}
 
-                {/* Unique Customer Transaction ID / Last 6 Digits */}
                 <div>
                   <label className="block text-xs font-medium text-neutral-300 mb-1">
                     Customer App Transaction ID (e.g. last 6 digits) *
@@ -1194,7 +1287,16 @@ export default function PosPage() {
                     return (
                       <div
                         key={bank.name}
-                        onClick={() => setSelectedBank(bank.name)}
+                        onClick={() => {
+                          setSelectedBank(bank.name);
+                          broadcastToCfd(supabase, 'PAYMENT_METHOD_CHANGE', {
+                            paymentMethod: 'TRANSFER',
+                            paymentDetails: {
+                              channel: 'TRANSFER',
+                              bank: bank.name,
+                            },
+                          });
+                        }}
                         className={`p-2.5 rounded-xl border text-xs cursor-pointer flex justify-between items-center transition ${
                           isSelected
                             ? 'bg-emerald-950/40 border-emerald-500 text-white'
@@ -1267,7 +1369,7 @@ export default function PosPage() {
         </div>
       )}
 
-      {/* THERMAL RECEIPT SLIP WITH TRANSACTION REF AND MODIFIERS */}
+      {/* THERMAL RECEIPT SLIP */}
       {isReceiptOpen && lastSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-5 print:shadow-none print:border-none print:m-0 print:p-0">
@@ -1290,7 +1392,7 @@ export default function PosPage() {
                 <h4 className="font-extrabold text-sm text-white tracking-widest uppercase print:text-black">
                   KITCHOS RESTAURANT
                 </h4>
-                <p className="text-[10px] text-neutral-400 print:text-neutral-600 font-bold uppercase">
+                <p className="text-[10px] text-neutral-400 print:text-neutral-600 font-bold uppercase mt-0.5">
                   *** {lastSale.order_type === 'DINE_IN' ? 'DINE-IN' : 'TAKEAWAY'} ***
                 </p>
                 <p className="text-[10px] text-neutral-400 print:text-neutral-600">
@@ -1348,9 +1450,8 @@ export default function PosPage() {
                   </span>
                 </div>
 
-                {/* Prominently print the transaction identifier */}
                 {lastSale.reference_number && (
-                  <div className="flex justify-between text-emerald-400 print:text-black font-bold">
+                  <div className="flex justify-between text-emerald-400 print:text-black font-bold pt-0.5 pb-0.5">
                     <span>Ref / Txn ID:</span>
                     <span>#{lastSale.reference_number}</span>
                   </div>
