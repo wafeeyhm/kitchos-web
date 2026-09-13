@@ -21,7 +21,7 @@ interface ModifierOption {
 }
 
 interface CartItem {
-  id: string; // unique line ID
+  id: string;
   product: ProductItem;
   quantity: number;
   modifiers: ModifierOption[];
@@ -35,6 +35,13 @@ interface BankAccount {
   account_number: string;
 }
 
+interface QrProvider {
+  name: string;
+  qr_image_url: string;
+  instructions?: string;
+  merchant_id?: string;
+}
+
 interface PaymentMethod {
   id: string;
   code: string;
@@ -42,9 +49,7 @@ interface PaymentMethod {
   is_enabled: boolean;
   config: {
     networks?: string[];
-    qr_title?: string;
-    qr_image_url?: string;
-    instructions?: string;
+    providers?: QrProvider[];
     banks?: BankAccount[];
   };
 }
@@ -59,6 +64,7 @@ interface CompletedSale {
   change_due: number;
   items: CartItem[];
   staff_name?: string;
+  reference_number?: string;
   payment_details?: any;
 }
 
@@ -107,7 +113,7 @@ export default function PosPage() {
   const [orderNotes, setOrderNotes] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
 
-  // Modifier Customization Modal State
+  // Modifier Customizer State
   const [customizingProduct, setCustomizingProduct] = useState<ProductItem | null>(null);
   const [activeModifiers, setActiveModifiers] = useState<ModifierOption[]>([]);
   const [itemNoteInput, setItemNoteInput] = useState('');
@@ -116,13 +122,15 @@ export default function PosPage() {
   const [activeShift, setActiveShift] = useState<CashShift | null>(null);
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
 
-  // Dynamic Payment Methods State
+  // Dynamic Payment Channels State
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
   const [selectedMethodCode, setSelectedMethodCode] = useState<string>('CASH');
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [amountTendered, setAmountTendered] = useState<string>('');
   const [selectedBank, setSelectedBank] = useState<string>('');
   const [selectedCardNetwork, setSelectedCardNetwork] = useState<string>('VISA');
+  const [selectedQrProvider, setSelectedQrProvider] = useState<QrProvider | null>(null);
+  const [transactionRef, setTransactionRef] = useState<string>('');
   const [isProcessingCheckout, setIsProcessingCheckout] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
@@ -222,13 +230,21 @@ export default function PosPage() {
       if (data && data.length > 0) {
         setPaymentMethods(data);
         setSelectedMethodCode(data[0].code);
+
+        // Set default bank
         const transfer = data.find((d) => d.code === 'TRANSFER');
         if (transfer?.config?.banks && transfer.config.banks.length > 0) {
           setSelectedBank(transfer.config.banks[0].name);
         }
+
+        // Set default Brunei QR provider
+        const qr = data.find((d) => d.code === 'QR');
+        if (qr?.config?.providers && qr.config.providers.length > 0) {
+          setSelectedQrProvider(qr.config.providers[0]);
+        }
       }
     } catch (err: any) {
-      console.error('Error fetching payment methods:', err.message);
+      console.error('Error loading payment methods:', err.message);
     }
   }, [supabase]);
 
@@ -238,7 +254,7 @@ export default function PosPage() {
     fetchPaymentMethods();
   }, [fetchProducts, fetchActiveShift, fetchPaymentMethods]);
 
-  // Keypad Auth for Switching Cashier or Unlocking
+  // Authenticate PIN
   const handleAuthenticatePin = async (pinToTest: string, unlockOnly = false) => {
     setIsVerifyingPin(true);
     setPinError(null);
@@ -293,7 +309,7 @@ export default function PosPage() {
     });
   }, [products, selectedCategory, searchQuery]);
 
-  // Add Item to Cart
+  // Direct Add
   const handleAddToCartDirect = (product: ProductItem) => {
     if (product.available_portions <= 0) return;
 
@@ -319,7 +335,7 @@ export default function PosPage() {
     });
   };
 
-  // Open Modifier Customizer
+  // Open Modifiers Customizer
   const handleOpenCustomize = (product: ProductItem, e: React.MouseEvent) => {
     e.stopPropagation();
     setCustomizingProduct(product);
@@ -371,7 +387,7 @@ export default function PosPage() {
     );
   };
 
-  // Totals
+  // Subtotals
   const cartSubtotal = useMemo(() => {
     return cart.reduce((sum, item) => sum + item.unit_total * item.quantity, 0);
   }, [cart]);
@@ -380,7 +396,7 @@ export default function PosPage() {
     return cart.reduce((sum, item) => sum + item.quantity, 0);
   }, [cart]);
 
-  // Cash Presets
+  // Quick cash tender presets
   const quickCashPresets = useMemo(() => {
     const total = cartSubtotal;
     const presets = new Set<number>();
@@ -403,12 +419,27 @@ export default function PosPage() {
   const changeDue = selectedMethodCode === 'CASH' ? Math.max(0, tenderFloat - cartSubtotal) : 0;
   const isTenderSufficient = selectedMethodCode !== 'CASH' || tenderFloat >= cartSubtotal;
 
-  // Active method config helper
   const activeMethodObj = paymentMethods.find((m) => m.code === selectedMethodCode);
 
   // Complete Order
   const handleProcessCheckout = async () => {
     if (cart.length === 0 || !isTenderSufficient) return;
+
+    // Soft validation for reference number on electronic tenders
+    if (
+      (selectedMethodCode === 'QR' ||
+        selectedMethodCode === 'CARD' ||
+        selectedMethodCode === 'TRANSFER') &&
+      !transactionRef.trim()
+    ) {
+      if (
+        !confirm(
+          'No transaction ID / reference was entered. Proceed without reference identifier?'
+        )
+      ) {
+        return;
+      }
+    }
 
     setIsProcessingCheckout(true);
     setCheckoutError(null);
@@ -417,12 +448,20 @@ export default function PosPage() {
       const finalTendered = selectedMethodCode === 'CASH' ? tenderFloat : cartSubtotal;
       const finalChange = selectedMethodCode === 'CASH' ? changeDue : 0;
 
-      // Construct payment telemetry details
+      // Construct payment details telemetry
       let paymentDetails: any = { channel: selectedMethodCode };
       if (selectedMethodCode === 'TRANSFER') {
         paymentDetails.bank = selectedBank;
       } else if (selectedMethodCode === 'CARD') {
         paymentDetails.network = selectedCardNetwork;
+      } else if (selectedMethodCode === 'QR' && selectedQrProvider) {
+        paymentDetails.qr_provider = selectedQrProvider.name;
+        paymentDetails.merchant_id = selectedQrProvider.merchant_id;
+      }
+
+      const finalRef = transactionRef.trim() || null;
+      if (finalRef) {
+        paymentDetails.reference_id = finalRef;
       }
 
       // 1. Insert Sales Header
@@ -437,6 +476,7 @@ export default function PosPage() {
           staff_id: activeStaff.id || null,
           order_type: orderType,
           notes: orderNotes.trim() || null,
+          reference_number: finalRef,
           payment_details: paymentDetails,
         })
         .select('id, created_at')
@@ -444,7 +484,7 @@ export default function PosPage() {
 
       if (saleErr) throw saleErr;
 
-      // 2. Insert Sale Items with Modifiers
+      // 2. Insert Items with Modifiers
       const lineItemsToInsert = cart.map((item) => ({
         sale_id: saleData.id,
         product_id: item.product.id,
@@ -470,11 +510,13 @@ export default function PosPage() {
         change_due: finalChange,
         items: [...cart],
         staff_name: activeStaff.name,
+        reference_number: finalRef || undefined,
         payment_details: paymentDetails,
       });
 
       setCart([]);
       setOrderNotes('');
+      setTransactionRef('');
       setIsCheckoutOpen(false);
       setIsReceiptOpen(true);
       fetchProducts();
@@ -493,7 +535,7 @@ export default function PosPage() {
       </div>
 
       <main className="flex-1 flex overflow-hidden">
-        {/* Left Section: Catalog & Ergonomic Controls */}
+        {/* Catalog Section */}
         <section className="flex-1 flex flex-col min-w-0 border-r border-neutral-800">
           <header className="h-16 px-6 border-b border-neutral-800 bg-neutral-900/50 flex items-center justify-between flex-shrink-0">
             <div>
@@ -603,7 +645,7 @@ export default function PosPage() {
             </div>
           </div>
 
-          {/* Product Grid with Modifier Trigger */}
+          {/* Product Grid */}
           <div className="flex-1 overflow-y-auto p-4">
             {loadingProducts ? (
               <div className="flex items-center justify-center h-48 text-neutral-500 text-xs">
@@ -684,7 +726,7 @@ export default function PosPage() {
           </div>
         </section>
 
-        {/* Right Section: Active Order Ticket & Ergonomics */}
+        {/* Order Ticket Section */}
         <section className="w-96 bg-neutral-900/30 flex flex-col flex-shrink-0">
           <div className="h-16 px-6 border-b border-neutral-800 flex items-center justify-between flex-shrink-0">
             <div className="flex items-center gap-2">
@@ -732,7 +774,7 @@ export default function PosPage() {
             </button>
           </div>
 
-          {/* Order Items List with Modifiers */}
+          {/* Cart Items with Modifiers */}
           <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
             {cart.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center p-6 text-neutral-500">
@@ -782,7 +824,7 @@ export default function PosPage() {
                     </span>
                   </div>
 
-                  {/* Render Modifiers and Kitchen Prep Notes */}
+                  {/* Modifiers List */}
                   {(item.modifiers.length > 0 || item.notes) && (
                     <div className="pt-1.5 border-t border-neutral-800/60 text-[10px] space-y-0.5 font-mono">
                       {item.modifiers.map((m, idx) => (
@@ -829,6 +871,7 @@ export default function PosPage() {
               disabled={cart.length === 0}
               onClick={() => {
                 setAmountTendered(cartSubtotal.toFixed(2));
+                setTransactionRef('');
                 setCheckoutError(null);
                 setIsCheckoutOpen(true);
               }}
@@ -928,7 +971,7 @@ export default function PosPage() {
         </div>
       )}
 
-      {/* DYNAMIC CHECKOUT MODAL */}
+      {/* DYNAMIC CHECKOUT MODAL WITH TRANSACTION REFERENCE TRACKING */}
       {isCheckoutOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
@@ -954,7 +997,10 @@ export default function PosPage() {
                 <button
                   key={m.code}
                   type="button"
-                  onClick={() => setSelectedMethodCode(m.code)}
+                  onClick={() => {
+                    setSelectedMethodCode(m.code);
+                    setTransactionRef('');
+                  }}
                   className={`py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition border cursor-pointer ${
                     selectedMethodCode === m.code
                       ? 'bg-emerald-500 text-neutral-950 border-emerald-400 shadow'
@@ -972,7 +1018,7 @@ export default function PosPage() {
               ))}
             </div>
 
-            {/* CASH TENDER BODY */}
+            {/* 1. CASH BODY */}
             {selectedMethodCode === 'CASH' && (
               <div className="space-y-3.5">
                 <div>
@@ -1017,24 +1063,21 @@ export default function PosPage() {
               </div>
             )}
 
-            {/* CARD TENDER BODY */}
+            {/* 2. CARD BODY + APPROVAL CODE */}
             {selectedMethodCode === 'CARD' && (
-              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3 text-center">
-                <span className="text-3xl block">💳</span>
-                <p className="text-xs text-neutral-300 font-medium">Card EDC Terminal</p>
-
-                <div className="space-y-1 text-left pt-2 border-t border-neutral-800">
-                  <span className="text-[10px] font-bold text-neutral-400 uppercase">
-                    Select Card Network:
+              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3.5">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-neutral-400 font-bold uppercase text-[10px]">
+                    Card Network:
                   </span>
-                  <div className="flex gap-2">
+                  <div className="flex gap-1.5">
                     {(activeMethodObj?.config?.networks || ['VISA', 'MASTERCARD', 'AMEX']).map(
                       (net) => (
                         <button
                           key={net}
                           type="button"
                           onClick={() => setSelectedCardNetwork(net)}
-                          className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
                             selectedCardNetwork === net
                               ? 'bg-emerald-500 text-neutral-950 border-emerald-400'
                               : 'bg-neutral-900 text-neutral-400 border-neutral-800'
@@ -1046,51 +1089,116 @@ export default function PosPage() {
                     )}
                   </div>
                 </div>
-              </div>
-            )}
 
-            {/* QR / E-WALLET BODY */}
-            {selectedMethodCode === 'QR' && (
-              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl text-center space-y-3">
-                <div className="w-36 h-36 mx-auto bg-white p-2 rounded-xl flex items-center justify-center">
-                  <img
-                    src={
-                      activeMethodObj?.config?.qr_image_url ||
-                      'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=KITCHOS-MERCHANT-PAY'
-                    }
-                    alt="Scan to Pay QR"
-                    className="w-full h-full object-contain"
-                  />
-                </div>
                 <div>
-                  <p className="text-xs text-white font-bold">
-                    {activeMethodObj?.config?.qr_title || 'Scan Merchant QR'}
-                  </p>
-                  <p className="text-[11px] text-neutral-400 mt-0.5">
-                    {activeMethodObj?.config?.instructions ||
-                      'Scan using your banking or digital wallet app.'}
+                  <label className="block text-xs font-medium text-neutral-300 mb-1">
+                    Terminal Approval / Trace / Txn No. (Slip Ref) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    placeholder="e.g. 084920 or last 4 digits"
+                    value={transactionRef}
+                    onChange={(e) => setTransactionRef(e.target.value)}
+                    className="w-full bg-neutral-900 border border-neutral-700 focus:border-emerald-500 rounded-xl px-3.5 py-2 font-mono text-sm text-white focus:outline-none"
+                  />
+                  <p className="text-[10px] text-neutral-500 mt-1">
+                    Enter the approval code from the EDC paper receipt for bank settlement.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* BANK TRANSFER BODY */}
+            {/* 3. MULTI-PROVIDER BRUNEI QR BODY */}
+            {selectedMethodCode === 'QR' && (
+              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3.5">
+                {/* Provider Selector Tabs */}
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-neutral-400 block mb-1.5">
+                    Select Customer QR Provider:
+                  </span>
+                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                    {(activeMethodObj?.config?.providers || []).map((p) => {
+                      const isSelected = selectedQrProvider?.name === p.name;
+                      return (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onClick={() => setSelectedQrProvider(p)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap border transition cursor-pointer ${
+                            isSelected
+                              ? 'bg-emerald-500 text-neutral-950 border-emerald-400'
+                              : 'bg-neutral-900 text-neutral-400 border-neutral-800 hover:text-white'
+                          }`}
+                        >
+                          {p.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Selected Provider QR Display */}
+                {selectedQrProvider && (
+                  <div className="flex items-center gap-3 p-3 bg-neutral-900/60 rounded-xl border border-neutral-800">
+                    <div className="w-24 h-24 bg-white p-1 rounded-lg flex-shrink-0 flex items-center justify-center">
+                      <img
+                        src={selectedQrProvider.qr_image_url}
+                        alt={selectedQrProvider.name}
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1 text-xs">
+                      <h4 className="font-bold text-white">{selectedQrProvider.name}</h4>
+                      <p className="text-[11px] text-emerald-400 font-mono">
+                        {selectedQrProvider.merchant_id || 'QuickPay / Qpay'}
+                      </p>
+                      <p className="text-[10px] text-neutral-400 mt-1">
+                        {selectedQrProvider.instructions || 'Customer scans QR on counter/screen.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Unique Customer Transaction ID / Last 6 Digits */}
+                <div>
+                  <label className="block text-xs font-medium text-neutral-300 mb-1">
+                    Customer App Transaction ID (e.g. last 6 digits) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    placeholder="e.g. 984210"
+                    value={transactionRef}
+                    onChange={(e) => setTransactionRef(e.target.value)}
+                    className="w-full bg-neutral-900 border border-neutral-700 focus:border-emerald-500 rounded-xl px-3.5 py-2 font-mono text-sm text-white focus:outline-none"
+                  />
+                  <p className="text-[10px] text-neutral-500 mt-1">
+                    Verify customer's green payment screen and record the reference code.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* 4. BANK TRANSFER BODY */}
             {selectedMethodCode === 'TRANSFER' && (
-              <div className="space-y-3">
-                <span className="text-[10px] font-bold text-neutral-400 uppercase">
+              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3.5">
+                <span className="text-[10px] font-bold text-neutral-400 uppercase block">
                   Select Destination Bank Account:
                 </span>
-                <div className="space-y-2">
+                <div className="space-y-1.5 max-h-36 overflow-y-auto">
                   {(activeMethodObj?.config?.banks || []).map((bank) => {
                     const isSelected = selectedBank === bank.name;
                     return (
                       <div
                         key={bank.name}
                         onClick={() => setSelectedBank(bank.name)}
-                        className={`p-3 rounded-xl border text-xs cursor-pointer flex justify-between items-center transition ${
+                        className={`p-2.5 rounded-xl border text-xs cursor-pointer flex justify-between items-center transition ${
                           isSelected
                             ? 'bg-emerald-950/40 border-emerald-500 text-white'
-                            : 'bg-neutral-950 border-neutral-800 text-neutral-400'
+                            : 'bg-neutral-900 border-neutral-800 text-neutral-400'
                         }`}
                       >
                         <div>
@@ -1098,7 +1206,6 @@ export default function PosPage() {
                           <p className="font-mono text-[11px] text-emerald-400">
                             #{bank.account_number}
                           </p>
-                          <p className="text-[10px] text-neutral-500">Name: {bank.account_name}</p>
                         </div>
                         <button
                           type="button"
@@ -1114,6 +1221,20 @@ export default function PosPage() {
                       </div>
                     );
                   })}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-neutral-300 mb-1">
+                    Transfer Ref / Sender Account Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. TRF-9941 or customer name"
+                    value={transactionRef}
+                    onChange={(e) => setTransactionRef(e.target.value)}
+                    className="w-full bg-neutral-900 border border-neutral-700 focus:border-emerald-500 rounded-xl px-3.5 py-2 font-mono text-sm text-white focus:outline-none"
+                  />
                 </div>
               </div>
             )}
@@ -1146,14 +1267,14 @@ export default function PosPage() {
         </div>
       )}
 
-      {/* THERMAL RECEIPT SLIP WITH MODIFIERS & ORDER TYPE */}
+      {/* THERMAL RECEIPT SLIP WITH TRANSACTION REF AND MODIFIERS */}
       {isReceiptOpen && lastSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-5 print:shadow-none print:border-none print:m-0 print:p-0">
             <div className="flex justify-between items-start border-b border-neutral-800 pb-3 print:hidden">
               <div>
                 <h3 className="text-base font-bold text-white">Payment Successful</h3>
-                <p className="text-[11px] text-neutral-400">Thermal slip ready for reprint</p>
+                <p className="text-[11px] text-neutral-400">Thermal slip ready for print</p>
               </div>
               <button
                 type="button"
@@ -1196,7 +1317,6 @@ export default function PosPage() {
                       </span>
                     </div>
 
-                    {/* Modifiers printout */}
                     {item.modifiers.map((m, mIdx) => (
                       <div key={mIdx} className="text-[10px] text-neutral-400 pl-3">
                         + {m.name} {m.price > 0 ? `($${m.price.toFixed(2)})` : ''}
@@ -1220,10 +1340,22 @@ export default function PosPage() {
                   <span>Tender:</span>
                   <span className="uppercase">
                     {lastSale.payment_method}
+                    {lastSale.payment_details?.qr_provider &&
+                      ` (${lastSale.payment_details.qr_provider})`}
                     {lastSale.payment_details?.bank && ` (${lastSale.payment_details.bank})`}
-                    {lastSale.payment_details?.network && ` (${lastSale.payment_details.network})`}
+                    {lastSale.payment_details?.network &&
+                      ` (${lastSale.payment_details.network})`}
                   </span>
                 </div>
+
+                {/* Prominently print the transaction identifier */}
+                {lastSale.reference_number && (
+                  <div className="flex justify-between text-emerald-400 print:text-black font-bold">
+                    <span>Ref / Txn ID:</span>
+                    <span>#{lastSale.reference_number}</span>
+                  </div>
+                )}
+
                 <div className="flex justify-between text-neutral-400 print:text-neutral-600">
                   <span>Tendered:</span>
                   <span>${lastSale.amount_tendered.toFixed(2)}</span>
@@ -1260,7 +1392,7 @@ export default function PosPage() {
         </div>
       )}
 
-      {/* MODAL: SWITCH CASHIER */}
+      {/* SWITCH CASHIER MODAL */}
       {isSwitchStaffOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-xs w-full p-6 text-center space-y-4 shadow-2xl">

@@ -3,114 +3,122 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
-import ManagerPinModal from '@/components/ManagerPinModal';
 
 interface SaleItem {
   id: string;
-  sale_id: string;
-  product_id: string;
   item_name: string;
   quantity: number;
   unit_price: number;
   subtotal: number;
+  modifiers?: { name: string; price: number }[];
+  notes?: string | null;
 }
 
 interface Sale {
   id: string;
+  created_at: string;
   total_amount: number;
   payment_method: string;
   amount_tendered: number;
   change_due: number;
   status: 'COMPLETED' | 'VOIDED';
-  void_reason: string | null;
-  voided_at: string | null;
-  created_at: string;
-  items?: SaleItem[];
+  order_type: 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
+  reference_number?: string | null;
+  notes?: string | null;
+  void_reason?: string | null;
+  voided_at?: string | null;
+  payment_details?: {
+    channel?: string;
+    qr_provider?: string;
+    bank?: string;
+    network?: string;
+    reference_id?: string;
+    merchant_id?: string;
+  } | null;
+  staff?: {
+    id: string;
+    name: string;
+  } | null;
+  sale_items?: SaleItem[];
 }
 
-export default function SalesHistoryPage() {
+type DatePreset = 'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'CUSTOM' | 'ALL';
+
+export default function SalesPage() {
   const supabase = createClient();
 
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
+  // Filters State
+  const [datePreset, setDatePreset] = useState<DatePreset>('TODAY');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [paymentFilter, setPaymentFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [dateFilter, setDateFilter] = useState<'today' | 'yesterday' | 'week' | 'all'>('today');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'COMPLETED' | 'VOIDED'>('ALL');
-  const [tenderFilter, setTenderFilter] = useState<'ALL' | 'cash' | 'card' | 'qr' | 'transfer'>('ALL');
 
-  // Receipt Modal State
+  // Receipt Slip Modal
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
-  // Void Confirmation & Manager Authorization Modal State
-  const [voidSaleTarget, setVoidSaleTarget] = useState<Sale | null>(null);
-  const [voidReason, setVoidReason] = useState('Customer canceled order');
-  const [isVoiding, setIsVoiding] = useState(false);
+  // Void Modal State
+  const [isVoidModalOpen, setIsVoidModalOpen] = useState(false);
+  const [saleToVoid, setSaleToVoid] = useState<Sale | null>(null);
+  const [voidPin, setVoidPin] = useState('');
+  const [voidReason, setVoidReason] = useState('Customer Cancelled / Mistake');
   const [voidError, setVoidError] = useState<string | null>(null);
-  const [isManagerPinOpen, setIsManagerPinOpen] = useState(false);
+  const [isVoiding, setIsVoiding] = useState(false);
 
-  // Fetch sales records with child items
   const fetchSales = useCallback(async () => {
     try {
       setLoading(true);
-
-      let query = supabase
+      const { data, error } = await supabase
         .from('sales')
         .select(`
           id,
+          created_at,
           total_amount,
           payment_method,
           amount_tendered,
           change_due,
           status,
+          order_type,
+          reference_number,
+          notes,
           void_reason,
           voided_at,
-          created_at,
-          items:sale_items (
+          payment_details,
+          staff:staff_members (
             id,
-            sale_id,
-            product_id,
+            name
+          ),
+          sale_items (
+            id,
             item_name,
             quantity,
             unit_price,
-            subtotal
+            subtotal,
+            modifiers,
+            notes
           )
         `)
         .order('created_at', { ascending: false });
 
-      // Apply date bounds
-      const now = new Date();
-      if (dateFilter === 'today') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-        query = query.gte('created_at', start);
-      } else if (dateFilter === 'yesterday') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-        const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        query = query.gte('created_at', start.toISOString()).lt('created_at', end.toISOString());
-      } else if (dateFilter === 'week') {
-        const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        query = query.gte('created_at', start);
-      }
-
-      const { data, error } = await query;
       if (error) throw error;
-
       setSales((data as any) || []);
     } catch (err: any) {
-      console.error('Error fetching sales:', err.message);
+      console.error('Error loading sales ledger:', err.message);
     } finally {
       setLoading(false);
     }
-  }, [dateFilter, supabase]);
+  }, [supabase]);
 
   useEffect(() => {
     fetchSales();
 
-    // Supabase Realtime listener for incoming sales or voids
     const channel = supabase
-      .channel(`realtime:sales-history-${Math.random()}`)
+      .channel(`realtime:sales-ledger-${Math.random()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, () => {
         fetchSales();
       })
@@ -121,81 +129,122 @@ export default function SalesHistoryPage() {
     };
   }, [fetchSales, supabase]);
 
-  // Filtered dataset
+  // Filtered Sales with Date, Status, Payment Channel, and Txn Ref ID
   const filteredSales = useMemo(() => {
-    return sales.filter((s) => {
-      // Status filter
-      if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
+    return sales.filter((sale) => {
+      // 1. Status filter
+      if (statusFilter !== 'ALL' && sale.status !== statusFilter) return false;
 
-      // Tender filter
-      if (tenderFilter !== 'ALL') {
-        const method = (s.payment_method || '').toLowerCase().trim();
-        const matchesTender =
-          tenderFilter === 'transfer'
-            ? method === 'transfer' || method.includes('bank')
-            : method === tenderFilter;
-        if (!matchesTender) return false;
+      // 2. Payment method filter
+      if (paymentFilter !== 'ALL' && sale.payment_method.toUpperCase() !== paymentFilter) {
+        return false;
       }
 
-      // Search query filter (Order ID or item name)
+      // 3. Date Presets & Custom Range
+      const saleDate = new Date(sale.created_at);
+      const now = new Date();
+
+      if (datePreset === 'TODAY') {
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        if (saleDate < startOfToday) return false;
+      } else if (datePreset === 'YESTERDAY') {
+        const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        const endOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, -1);
+        if (saleDate < startOfYesterday || saleDate > endOfYesterday) return false;
+      } else if (datePreset === 'THIS_WEEK') {
+        const dayOfWeek = now.getDay(); // 0 is Sunday
+        const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
+        if (saleDate < startOfWeek) return false;
+      } else if (datePreset === 'THIS_MONTH') {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        if (saleDate < startOfMonth) return false;
+      } else if (datePreset === 'CUSTOM') {
+        if (customStartDate) {
+          const start = new Date(`${customStartDate}T00:00:00`);
+          if (saleDate < start) return false;
+        }
+        if (customEndDate) {
+          const end = new Date(`${customEndDate}T23:59:59.999`);
+          if (saleDate > end) return false;
+        }
+      }
+
+      // 4. Search Filter (Txn ID, Order ID, Cashier Name, Bank, Provider)
       if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase().trim();
-        const matchesId = s.id.toLowerCase().includes(query);
-        const matchesItem = s.items?.some((i) => i.item_name.toLowerCase().includes(query));
-        if (!matchesId && !matchesItem) return false;
+        const q = searchQuery.toLowerCase().replace('#', '');
+        const idMatch = sale.id.toLowerCase().includes(q);
+        const refMatch = sale.reference_number && sale.reference_number.toLowerCase().includes(q);
+        const providerMatch =
+          sale.payment_details?.qr_provider &&
+          sale.payment_details.qr_provider.toLowerCase().includes(q);
+        const bankMatch =
+          sale.payment_details?.bank && sale.payment_details.bank.toLowerCase().includes(q);
+        const staffMatch = sale.staff?.name && sale.staff.name.toLowerCase().includes(q);
+
+        if (!idMatch && !refMatch && !providerMatch && !bankMatch && !staffMatch) {
+          return false;
+        }
       }
 
       return true;
     });
-  }, [sales, statusFilter, tenderFilter, searchQuery]);
+  }, [sales, datePreset, customStartDate, customEndDate, statusFilter, paymentFilter, searchQuery]);
 
-  // Aggregate Metrics for Active View
+  // Metrics calculated based on the active filtered set
   const metrics = useMemo(() => {
-    let completedRevenue = 0;
-    let completedCount = 0;
-    let voidedCount = 0;
-    let voidedAmount = 0;
+    const activeSales = filteredSales.filter((s) => s.status === 'COMPLETED');
+    const voidedSales = filteredSales.filter((s) => s.status === 'VOIDED');
 
-    filteredSales.forEach((s) => {
-      const amt = Number(s.total_amount || 0);
-      if (s.status === 'COMPLETED') {
-        completedRevenue += amt;
-        completedCount += 1;
-      } else if (s.status === 'VOIDED') {
-        voidedCount += 1;
-        voidedAmount += amt;
-      }
-    });
+    const totalRevenue = activeSales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
+    const totalTransactions = activeSales.length;
+    const averageOrderValue = totalTransactions > 0 ? totalRevenue / totalTransactions : 0;
 
-    const aov = completedCount > 0 ? completedRevenue / completedCount : 0;
-    return { completedRevenue, completedCount, voidedCount, voidedAmount, aov };
+    return {
+      totalRevenue,
+      totalTransactions,
+      averageOrderValue,
+      voidedCount: voidedSales.length,
+    };
   }, [filteredSales]);
 
-  // Handle Void Sale execution via RPC after manager authorization
-  const handleExecuteVoid = async (approvingManagerName?: string) => {
-    if (!voidSaleTarget) return;
+  // Void Handler with Manager PIN
+  const handleConfirmVoid = async () => {
+    if (!saleToVoid) return;
+    if (voidPin.length !== 4) {
+      setVoidError('Please enter a valid 4-digit Manager PIN.');
+      return;
+    }
 
     setIsVoiding(true);
     setVoidError(null);
 
-    const fullReason = approvingManagerName
-      ? `${voidReason.trim()} (Approved by: ${approvingManagerName})`
-      : voidReason.trim();
-
     try {
-      const { data, error } = await supabase.rpc('void_sale', {
-        p_sale_id: voidSaleTarget.id,
-        p_reason: fullReason,
+      // 1. Verify Manager PIN
+      const { data: pinRes, error: pinErr } = await supabase.rpc('verify_manager_pin', {
+        p_pin: voidPin.trim(),
       });
 
-      if (error) throw error;
-      if (!data.success) throw new Error(data.message);
+      if (pinErr) throw pinErr;
+      if (!pinRes || !pinRes.valid) {
+        setVoidError('Invalid Manager PIN. Authorization failed.');
+        setIsVoiding(false);
+        return;
+      }
 
-      setVoidSaleTarget(null);
-      setVoidReason('Customer canceled order');
+      // 2. Execute Void RPC
+      const { data: voidRes, error: rpcErr } = await supabase.rpc('void_sale_transaction', {
+        p_sale_id: saleToVoid.id,
+        p_reason: `${voidReason} (Auth by ${pinRes.manager_name || 'Manager'})`,
+      });
+
+      if (rpcErr) throw rpcErr;
+      if (!voidRes.success) throw new Error(voidRes.message);
+
+      setIsVoidModalOpen(false);
+      setSaleToVoid(null);
+      setVoidPin('');
       fetchSales();
     } catch (err: any) {
-      console.error('Void error:', err);
       setVoidError(err.message || 'Failed to void transaction.');
     } finally {
       setIsVoiding(false);
@@ -209,142 +258,170 @@ export default function SalesHistoryPage() {
       </div>
 
       <main className="flex-1 flex flex-col overflow-y-auto p-8 space-y-6 bg-neutral-950">
-        {/* Top Header */}
+        {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-800 pb-5">
           <div>
             <h1 className="text-2xl font-black text-white tracking-tight">Sales & Orders Ledger</h1>
             <p className="text-xs text-neutral-400 mt-1">
-              Audit transaction history, reprint thermal slips, and execute manager-authorized inventory rollbacks.
+              Live transaction records, date auditing, Brunei QR/EDC approval codes, and cashier audit trail.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => fetchSales()}
-              className="bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-3 py-2 rounded-xl text-xs text-neutral-400 hover:text-white transition-colors cursor-pointer"
-              title="Refresh ledger"
-            >
-              ↻ Refresh
-            </button>
-          </div>
+          <button
+            onClick={() => fetchSales()}
+            className="bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-3.5 py-2 rounded-xl text-xs font-semibold text-neutral-300 hover:text-white transition cursor-pointer"
+          >
+            ↻ Refresh Ledger
+          </button>
         </div>
 
-        {/* 4 Summary Metric Cards */}
+        {/* 4 Metrics Cards (Updates dynamically with Date Filter) */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-5 flex flex-col justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 mb-1">
-              Net Completed Sales
+              Period Revenue
             </span>
             <p className="font-mono text-3xl font-black text-emerald-400">
-              ${metrics.completedRevenue.toFixed(2)}
+              ${metrics.totalRevenue.toFixed(2)}
             </p>
             <span className="text-[11px] text-neutral-500 mt-2">
-              Excludes voided and refunded tickets
+              Gross completed sales for selected period
             </span>
           </div>
 
           <div className="bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-5 flex flex-col justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 mb-1">
-              Completed Orders
+              Transactions Count
             </span>
-            <p className="font-mono text-3xl font-black text-white">{metrics.completedCount}</p>
-            <span className="text-[11px] text-neutral-500 mt-2">
-              Average ticket: <strong className="text-neutral-300">${metrics.aov.toFixed(2)}</strong>
-            </span>
+            <p className="font-mono text-3xl font-black text-white">{metrics.totalTransactions}</p>
+            <span className="text-[11px] text-neutral-500 mt-2">Completed customer tickets</span>
           </div>
 
           <div className="bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-5 flex flex-col justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 mb-1">
-              Voided Orders
+              Average Order Value (AOV)
+            </span>
+            <p className="font-mono text-3xl font-black text-amber-400">
+              ${metrics.averageOrderValue.toFixed(2)}
+            </p>
+            <span className="text-[11px] text-neutral-500 mt-2">Average spend per ticket</span>
+          </div>
+
+          <div className="bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-5 flex flex-col justify-between">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 mb-1">
+              Voided Tickets
             </span>
             <p className="font-mono text-3xl font-black text-rose-400">{metrics.voidedCount}</p>
-            <span className="text-[11px] text-neutral-500 mt-2">
-              Cancelled tickets with stock returned
-            </span>
-          </div>
-
-          <div className="bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-5 flex flex-col justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 mb-1">
-              Voided Revenue Loss
-            </span>
-            <p className="font-mono text-3xl font-black text-neutral-400">
-              ${metrics.voidedAmount.toFixed(2)}
-            </p>
-            <span className="text-[11px] text-neutral-500 mt-2">
-              {metrics.completedRevenue > 0
-                ? `${((metrics.voidedAmount / (metrics.completedRevenue + metrics.voidedAmount)) * 100).toFixed(1)}% void rate`
-                : '0% void rate'}
-            </span>
+            <span className="text-[11px] text-neutral-500 mt-2">Cancelled & restocked orders</span>
           </div>
         </section>
 
-        {/* Filters Toolbar */}
-        <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Date Range Chips */}
-            <div className="flex bg-neutral-950 p-1 rounded-xl border border-neutral-800">
-              {(['today', 'yesterday', 'week', 'all'] as const).map((range) => (
+        {/* Filter Controls Bar */}
+        <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-4 space-y-3">
+          {/* Top Row: Date Presets & Custom Range */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800/70 pb-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-bold text-neutral-400 mr-2 flex items-center gap-1">
+                <span>📅</span> Date:
+              </span>
+              {(
+                [
+                  { id: 'TODAY', label: 'Today' },
+                  { id: 'YESTERDAY', label: 'Yesterday' },
+                  { id: 'THIS_WEEK', label: 'This Week' },
+                  { id: 'THIS_MONTH', label: 'This Month' },
+                  { id: 'CUSTOM', label: 'Custom Range' },
+                  { id: 'ALL', label: 'All Time' },
+                ] as const
+              ).map((preset) => (
                 <button
-                  key={range}
-                  onClick={() => setDateFilter(range)}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold capitalize transition cursor-pointer ${
-                    dateFilter === range
-                      ? 'bg-neutral-800 text-white shadow-sm'
-                      : 'text-neutral-400 hover:text-neutral-200'
+                  key={preset.id}
+                  onClick={() => setDatePreset(preset.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                    datePreset === preset.id
+                      ? 'bg-emerald-500 text-neutral-950 border-emerald-400 shadow-sm'
+                      : 'bg-neutral-950 text-neutral-400 border-neutral-800 hover:text-white hover:bg-neutral-900'
                   }`}
                 >
-                  {range === 'week' ? 'Past 7 Days' : range}
+                  {preset.label}
                 </button>
               ))}
             </div>
 
-            {/* Status Selector */}
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as any)}
-              className="bg-neutral-950 border border-neutral-800 text-xs text-neutral-300 rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-500 cursor-pointer"
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="COMPLETED">Completed Only</option>
-              <option value="VOIDED">Voided Only</option>
-            </select>
-
-            {/* Tender Method Selector */}
-            <select
-              value={tenderFilter}
-              onChange={(e) => setTenderFilter(e.target.value as any)}
-              className="bg-neutral-950 border border-neutral-800 text-xs text-neutral-300 rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-500 cursor-pointer"
-            >
-              <option value="ALL">All Payment Methods</option>
-              <option value="cash">💵 Cash</option>
-              <option value="card">💳 Card</option>
-              <option value="qr">📱 QR Code</option>
-              <option value="transfer">🏦 Bank Transfer</option>
-            </select>
+            {/* Custom Range Date Pickers (Shown when CUSTOM is selected) */}
+            {datePreset === 'CUSTOM' && (
+              <div className="flex items-center gap-2 text-xs bg-neutral-950 border border-neutral-800 p-1.5 rounded-xl">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-neutral-500 text-[10px] uppercase font-mono">From:</span>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <span className="text-neutral-600">—</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-neutral-500 text-[10px] uppercase font-mono">To:</span>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Search Box */}
-          <div className="w-full sm:w-64">
-            <input
-              type="text"
-              placeholder="Search by ticket # or dish..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
-            />
+          {/* Bottom Row: Status, Tender, and Search */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="bg-neutral-950 border border-neutral-800 text-xs text-neutral-300 rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-500 cursor-pointer"
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="VOIDED">Voided</option>
+              </select>
+
+              <select
+                value={paymentFilter}
+                onChange={(e) => setPaymentFilter(e.target.value)}
+                className="bg-neutral-950 border border-neutral-800 text-xs text-neutral-300 rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-500 cursor-pointer"
+              >
+                <option value="ALL">All Payment Channels</option>
+                <option value="CASH">Cash</option>
+                <option value="QR">QR / E-Wallet</option>
+                <option value="CARD">Card EDC</option>
+                <option value="TRANSFER">Bank Transfer</option>
+              </select>
+            </div>
+
+            <div className="w-full sm:w-80">
+              <input
+                type="text"
+                placeholder="Search Txn Ref #, Order ID, Cashier, or Bank..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
           </div>
         </div>
 
-        {/* Transactions Table */}
+        {/* Sales Table */}
         <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl overflow-hidden backdrop-blur-sm flex-1">
           <table className="w-full text-left text-xs">
             <thead className="border-b border-neutral-800 bg-neutral-900/80 text-neutral-400 font-medium">
               <tr>
-                <th className="py-3.5 px-5">Ticket #</th>
-                <th className="py-3.5 px-5">Date & Time</th>
-                <th className="py-3.5 px-5">Items Summary</th>
-                <th className="py-3.5 px-5 text-center">Tender</th>
-                <th className="py-3.5 px-5 text-right">Total Amount</th>
+                <th className="py-3.5 px-5">Order ID & Type</th>
+                <th className="py-3.5 px-5">Timestamp</th>
+                <th className="py-3.5 px-5">Staff / Cashier</th>
+                <th className="py-3.5 px-5">Payment & Txn Ref ID</th>
+                <th className="py-3.5 px-5 text-right">Total Bill</th>
                 <th className="py-3.5 px-5 text-center">Status</th>
                 <th className="py-3.5 px-5 text-right">Actions</th>
               </tr>
@@ -359,23 +436,41 @@ export default function SalesHistoryPage() {
               ) : filteredSales.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-neutral-500">
-                    No orders match your filter criteria.
+                    No transactions found matching your date or search filter.
                   </td>
                 </tr>
               ) : (
                 filteredSales.map((sale) => {
                   const isVoided = sale.status === 'VOIDED';
-                  const method = (sale.payment_method || '').toLowerCase().trim();
+                  const qrProvider = sale.payment_details?.qr_provider;
+                  const bankName = sale.payment_details?.bank;
+                  const cardNet = sale.payment_details?.network;
 
                   return (
-                    <tr key={sale.id} className="hover:bg-neutral-800/20 transition-colors">
-                      {/* Ticket # */}
-                      <td className="py-3.5 px-5 font-mono font-bold text-white whitespace-nowrap">
-                        #{sale.id.slice(0, 8)}
+                    <tr
+                      key={sale.id}
+                      className={`hover:bg-neutral-800/20 transition-colors ${
+                        isVoided ? 'opacity-50' : ''
+                      }`}
+                    >
+                      {/* Order ID & Type */}
+                      <td className="py-3.5 px-5">
+                        <span className="font-mono font-bold text-white block">
+                          #{sale.id.slice(0, 8)}
+                        </span>
+                        <span
+                          className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                            sale.order_type === 'TAKEAWAY'
+                              ? 'bg-amber-950/80 text-amber-400 border border-amber-800/60'
+                              : 'bg-neutral-800 text-neutral-400'
+                          }`}
+                        >
+                          {sale.order_type || 'DINE_IN'}
+                        </span>
                       </td>
 
                       {/* Timestamp */}
-                      <td className="py-3.5 px-5 text-neutral-400 font-mono whitespace-nowrap">
+                      <td className="py-3.5 px-5 text-neutral-400 font-mono">
                         {new Date(sale.created_at).toLocaleString([], {
                           month: 'short',
                           day: 'numeric',
@@ -384,37 +479,47 @@ export default function SalesHistoryPage() {
                         })}
                       </td>
 
-                      {/* Items Summary */}
-                      <td className="py-3.5 px-5 text-neutral-300 max-w-xs truncate">
-                        {sale.items && sale.items.length > 0
-                          ? sale.items.map((i) => `${i.quantity}x ${i.item_name}`).join(', ')
-                          : '—'}
+                      {/* Staff */}
+                      <td className="py-3.5 px-5 text-white font-medium">
+                        {sale.staff?.name || 'Cashier Station'}
                       </td>
 
-                      {/* Payment Method Badge */}
-                      <td className="py-3.5 px-5 text-center whitespace-nowrap">
-                        <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border bg-neutral-900 border-neutral-800 text-neutral-300 uppercase">
-                          {method === 'cash'
-                            ? '💵 Cash'
-                            : method === 'card'
-                            ? '💳 Card'
-                            : method === 'transfer' || method.includes('bank')
-                            ? '🏦 Transfer'
-                            : '📱 QR'}
-                        </span>
+                      {/* Payment & Prominent Txn Ref ID */}
+                      <td className="py-3.5 px-5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-white uppercase text-xs">
+                            {sale.payment_method}
+                          </span>
+                          {(qrProvider || bankName || cardNet) && (
+                            <span className="text-[10px] text-neutral-400 font-medium">
+                              ({qrProvider || bankName || cardNet})
+                            </span>
+                          )}
+                        </div>
+
+                        {sale.reference_number ? (
+                          <div className="flex items-center gap-1 text-[11px] font-mono font-bold text-emerald-400 mt-0.5">
+                            <span className="text-neutral-500 font-normal">Ref:</span>
+                            <span>#{sale.reference_number}</span>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-neutral-600 font-mono">
+                            No ref recorded
+                          </span>
+                        )}
                       </td>
 
-                      {/* Total Amount */}
+                      {/* Total */}
                       <td
-                        className={`py-3.5 px-5 text-right font-mono font-bold text-sm whitespace-nowrap ${
+                        className={`py-3.5 px-5 text-right font-mono font-bold text-sm ${
                           isVoided ? 'line-through text-neutral-500' : 'text-emerald-400'
                         }`}
                       >
                         ${Number(sale.total_amount).toFixed(2)}
                       </td>
 
-                      {/* Status Badge */}
-                      <td className="py-3.5 px-5 text-center whitespace-nowrap">
+                      {/* Status */}
+                      <td className="py-3.5 px-5 text-center">
                         <span
                           className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase border ${
                             isVoided
@@ -433,28 +538,22 @@ export default function SalesHistoryPage() {
                             setSelectedSale(sale);
                             setIsReceiptOpen(true);
                           }}
-                          className="bg-neutral-900 hover:bg-neutral-800 text-neutral-300 text-xs px-3 py-1 rounded-lg border border-neutral-800 transition cursor-pointer"
+                          className="bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white text-xs px-3 py-1 rounded-lg border border-neutral-800 transition cursor-pointer"
                         >
-                          Receipt
+                          View Slip
                         </button>
 
-                        {!isVoided ? (
+                        {!isVoided && (
                           <button
                             onClick={() => {
-                              setVoidSaleTarget(sale);
+                              setSaleToVoid(sale);
+                              setVoidPin('');
                               setVoidError(null);
+                              setIsVoidModalOpen(true);
                             }}
-                            className="bg-rose-950/30 hover:bg-rose-900/50 text-rose-300 text-xs px-3 py-1 rounded-lg border border-rose-800/50 transition cursor-pointer"
+                            className="bg-rose-950/30 hover:bg-rose-900/50 text-rose-400 hover:text-rose-300 text-xs px-2.5 py-1 rounded-lg border border-rose-900/50 transition cursor-pointer"
                           >
-                            Void Order
-                          </button>
-                        ) : (
-                          <button
-                            disabled
-                            title={`Voided: ${sale.void_reason || 'No reason specified'}`}
-                            className="text-neutral-600 text-xs px-2 py-1 cursor-not-allowed"
-                          >
-                            Voided
+                            Void
                           </button>
                         )}
                       </td>
@@ -466,7 +565,7 @@ export default function SalesHistoryPage() {
           </table>
         </div>
 
-        {/* RECEIPT REPRINT MODAL */}
+        {/* MODAL: ORDER RECEIPT SLIP */}
         {isReceiptOpen && selectedSale && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-5 print:shadow-none print:border-none print:m-0 print:p-0">
@@ -485,25 +584,17 @@ export default function SalesHistoryPage() {
                 </button>
               </div>
 
-              {/* 80mm Thermal Slip Body */}
+              {/* Thermal Slip */}
               <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-xl font-mono text-xs text-neutral-300 space-y-2.5 print:border-none print:p-0 print:text-black">
-                {selectedSale.status === 'VOIDED' && (
-                  <div className="border-2 border-dashed border-rose-500 text-rose-500 p-2 text-center rounded font-bold text-xs uppercase tracking-widest print:border-black print:text-black">
-                    *** VOIDED TRANSACTION ***
-                    {selectedSale.void_reason && (
-                      <p className="text-[10px] font-normal mt-0.5 lowercase tracking-normal">
-                        Reason: {selectedSale.void_reason}
-                      </p>
-                    )}
-                  </div>
-                )}
-
                 <div className="text-center pb-2 border-b border-dashed border-neutral-700">
                   <h4 className="font-extrabold text-sm text-white tracking-widest uppercase print:text-black">
                     KITCHOS RESTAURANT
                   </h4>
+                  <p className="text-[10px] text-neutral-400 print:text-neutral-600 font-bold uppercase mt-0.5">
+                    *** {selectedSale.order_type === 'TAKEAWAY' ? 'TAKEAWAY' : 'DINE-IN'} ***
+                  </p>
                   <p className="text-[10px] text-neutral-400 print:text-neutral-600">
-                    Order #{selectedSale.id.slice(0, 8)}
+                    Order #{selectedSale.id.slice(0, 8)} • Staff: {selectedSale.staff?.name || 'Staff'}
                   </p>
                   <p className="text-[10px] text-neutral-400 print:text-neutral-600">
                     {new Date(selectedSale.created_at).toLocaleString([], {
@@ -513,39 +604,77 @@ export default function SalesHistoryPage() {
                   </p>
                 </div>
 
-                {/* Items */}
+                {/* Items & Modifiers */}
                 <div className="space-y-1.5 py-1 border-b border-dashed border-neutral-800">
-                  {(selectedSale.items || []).map((item, idx) => (
-                    <div key={idx} className="flex justify-between text-[11px]">
-                      <span className="truncate pr-2">
-                        {item.quantity}x {item.item_name}
-                      </span>
-                      <span className="font-bold">
-                        ${(item.unit_price * item.quantity).toFixed(2)}
-                      </span>
+                  {(selectedSale.sale_items || []).map((item, idx) => (
+                    <div key={idx} className="text-[11px]">
+                      <div className="flex justify-between">
+                        <span className="truncate pr-2 font-bold">
+                          {item.quantity}x {item.item_name}
+                        </span>
+                        <span className="font-bold font-mono">
+                          ${Number(item.subtotal).toFixed(2)}
+                        </span>
+                      </div>
+
+                      {item.modifiers &&
+                        item.modifiers.map((m, mIdx) => (
+                          <div key={mIdx} className="text-[10px] text-neutral-400 pl-3">
+                            + {m.name} {m.price > 0 ? `($${m.price.toFixed(2)})` : ''}
+                          </div>
+                        ))}
+                      {item.notes && (
+                        <div className="text-[10px] text-neutral-400 italic pl-3">
+                          "{item.notes}"
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
 
-                {/* Totals */}
+                {/* Payment Breakdown & Transaction Reference ID */}
                 <div className="space-y-1 text-[11px]">
                   <div className="flex justify-between font-bold text-white print:text-black">
                     <span>TOTAL:</span>
                     <span>${Number(selectedSale.total_amount).toFixed(2)}</span>
                   </div>
+
                   <div className="flex justify-between text-neutral-400 print:text-neutral-600">
                     <span>Payment Method:</span>
-                    <span className="uppercase">{selectedSale.payment_method}</span>
+                    <span className="uppercase font-semibold">
+                      {selectedSale.payment_method}
+                      {selectedSale.payment_details?.qr_provider &&
+                        ` (${selectedSale.payment_details.qr_provider})`}
+                      {selectedSale.payment_details?.bank &&
+                        ` (${selectedSale.payment_details.bank})`}
+                      {selectedSale.payment_details?.network &&
+                        ` (${selectedSale.payment_details.network})`}
+                    </span>
                   </div>
+
+                  {/* PROMINENT TRANSACTION IDENTIFIER */}
+                  {selectedSale.reference_number ? (
+                    <div className="flex justify-between text-emerald-400 print:text-black font-bold pt-0.5 pb-0.5">
+                      <span>Txn / Approval ID:</span>
+                      <span>#{selectedSale.reference_number}</span>
+                    </div>
+                  ) : null}
+
                   <div className="flex justify-between text-neutral-400 print:text-neutral-600">
                     <span>Tendered:</span>
-                    <span>${Number(selectedSale.amount_tendered || selectedSale.total_amount).toFixed(2)}</span>
+                    <span>${Number(selectedSale.amount_tendered).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between text-neutral-400 print:text-neutral-600">
                     <span>Change Due:</span>
-                    <span>${Number(selectedSale.change_due || 0).toFixed(2)}</span>
+                    <span>${Number(selectedSale.change_due).toFixed(2)}</span>
                   </div>
                 </div>
+
+                {selectedSale.notes && (
+                  <div className="text-[10px] text-neutral-400 pt-1 border-t border-dashed border-neutral-800 italic">
+                    Memo: {selectedSale.notes}
+                  </div>
+                )}
 
                 <div className="text-center pt-2 border-t border-dashed border-neutral-700 text-[10px] text-neutral-500">
                   Thank you for dining with us!
@@ -563,7 +692,7 @@ export default function SalesHistoryPage() {
                 </button>
                 <button
                   onClick={() => setIsReceiptOpen(false)}
-                  className="px-4 py-2.5 rounded-xl bg-neutral-900 border border-neutral-800 text-xs font-bold text-neutral-300 transition cursor-pointer"
+                  className="flex-1 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-bold text-white transition cursor-pointer"
                 >
                   Close
                 </button>
@@ -572,83 +701,78 @@ export default function SalesHistoryPage() {
           </div>
         )}
 
-        {/* VOID CONFIRMATION STEP 1: Reason Selection */}
-        {voidSaleTarget && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-              <div className="border-b border-neutral-800 pb-3">
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-rose-500 inline-block" />
-                  <h3 className="text-lg font-bold text-white">Void Order #{voidSaleTarget.id.slice(0, 8)}</h3>
-                </div>
-                <p className="text-xs text-neutral-400 mt-1">
-                  Total amount: <strong className="text-white">${Number(voidSaleTarget.total_amount).toFixed(2)}</strong>
-                </p>
-              </div>
-
-              <div className="p-3 bg-rose-950/20 border border-rose-900/50 rounded-xl text-xs text-rose-300 space-y-1">
-                <p className="font-semibold">⚠️ Inventory Stock Rollback & Security Notice:</p>
-                <p className="text-[11px] text-rose-400/90">
-                  All raw ingredient portions consumed by this ticket will be automatically returned to stock. A 4-digit Manager PIN is required to approve this transaction.
-                </p>
-              </div>
-
+        {/* MODAL: VOID SALE TRANSACTION (Requires Manager PIN) */}
+        {isVoidModalOpen && saleToVoid && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
+            <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
               <div>
-                <label className="block text-xs font-medium text-neutral-300 mb-1.5">
-                  Reason for Void
-                </label>
-                <select
-                  value={voidReason}
-                  onChange={(e) => setVoidReason(e.target.value)}
-                  className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-500 transition"
-                >
-                  <option value="Customer canceled order">Customer canceled order</option>
-                  <option value="Wrong items rung up / cashier mistake">Wrong items rung up / cashier mistake</option>
-                  <option value="Payment failed or declined">Payment failed or declined</option>
-                  <option value="Food quality complaint / remake">Food quality complaint / remake</option>
-                  <option value="Duplicate transaction">Duplicate transaction</option>
-                </select>
+                <span className="text-[10px] uppercase font-bold text-rose-400 tracking-wider">
+                  Manager Authorization Required
+                </span>
+                <h3 className="text-lg font-bold text-white mt-0.5">Void Sale Transaction</h3>
+                <p className="text-xs text-neutral-400">
+                  Order #{saleToVoid.id.slice(0, 8)} • ${Number(saleToVoid.total_amount).toFixed(2)}
+                </p>
               </div>
 
-              {voidError && (
-                <div className="p-2.5 bg-rose-950/40 border border-rose-900 text-rose-300 text-xs rounded-lg">
-                  {voidError}
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-neutral-300 font-medium mb-1">Reason for Void</label>
+                  <select
+                    value={voidReason}
+                    onChange={(e) => setVoidReason(e.target.value)}
+                    className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white cursor-pointer"
+                  >
+                    <option value="Customer Cancelled / Mistake">Customer Cancelled / Mistake</option>
+                    <option value="Wrong Item Rung Up">Wrong Item Rung Up</option>
+                    <option value="Kitchen Preparation Issue">Kitchen Preparation Issue</option>
+                    <option value="Payment Gateway Failure">Payment Gateway Failure</option>
+                    <option value="Manager Complimentary">Manager Complimentary</option>
+                  </select>
                 </div>
-              )}
 
-              <div className="flex justify-end gap-2.5 pt-3 border-t border-neutral-800">
-                <button
-                  type="button"
-                  disabled={isVoiding}
-                  onClick={() => setVoidSaleTarget(null)}
-                  className="px-4 py-2 text-xs text-neutral-400 hover:text-white bg-neutral-800 rounded-lg cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={isVoiding}
-                  onClick={() => setIsManagerPinOpen(true)}
-                  className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition disabled:opacity-50 cursor-pointer shadow-lg shadow-rose-950/40"
-                >
-                  Authorize & Void Order →
-                </button>
+                <div>
+                  <label className="block text-neutral-300 font-medium mb-1">
+                    Enter 4-Digit Manager PIN *
+                  </label>
+                  <input
+                    type="password"
+                    maxLength={4}
+                    autoFocus
+                    placeholder="••••"
+                    value={voidPin}
+                    onChange={(e) => setVoidPin(e.target.value)}
+                    className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white font-mono text-center tracking-widest text-base focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+
+                {voidError && (
+                  <p className="text-xs text-rose-400 bg-rose-950/40 border border-rose-900/60 p-2 rounded-xl">
+                    {voidError}
+                  </p>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-neutral-800">
+                  <button
+                    type="button"
+                    onClick={() => setIsVoidModalOpen(false)}
+                    className="px-3.5 py-2 text-neutral-400 hover:text-white bg-neutral-800 rounded-xl cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isVoiding || voidPin.length !== 4}
+                    onClick={handleConfirmVoid}
+                    className="px-4 py-2 font-bold text-white bg-rose-600 hover:bg-rose-500 disabled:opacity-40 rounded-xl transition cursor-pointer"
+                  >
+                    {isVoiding ? 'Voiding...' : 'Confirm Void'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         )}
-
-        {/* STEP 2: MANAGER PIN OVERRIDE MODAL */}
-        <ManagerPinModal
-          isOpen={isManagerPinOpen}
-          title="Authorize Order Void"
-          description={`Enter 4-digit Manager PIN to void ticket #${voidSaleTarget?.id.slice(0, 8)}`}
-          onClose={() => setIsManagerPinOpen(false)}
-          onAuthorized={(manager) => {
-            setIsManagerPinOpen(false);
-            handleExecuteVoid(manager.name);
-          }}
-        />
       </main>
     </div>
   );
