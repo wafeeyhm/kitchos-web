@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useBranch } from '@/context/BranchContext';
 
 interface NavItem {
   name: string;
@@ -34,6 +35,11 @@ const NAV_ITEMS: NavItem[] = [
     icon: '🪞',
     isExternalWindow: true,
     badge: 'CFD',
+  },
+  {
+    name: 'Branch Outlets',
+    href: '/branches',
+    icon: '🏢',
   },
   {
     name: 'Menu & Catalog',
@@ -74,6 +80,7 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const { branches, currentBranch, setCurrentBranch } = useBranch();
 
   const handleOpenCfdWindow = (e: React.MouseEvent, href: string) => {
     e.preventDefault();
@@ -101,7 +108,7 @@ export default function Sidebar() {
           <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" title="System Online" />
         </div>
 
-        <nav className="p-3.5 space-y-1 overflow-y-auto max-h-[calc(100vh-8rem)]">
+        <nav className="p-3.5 space-y-1 overflow-y-auto max-h-[calc(100vh-12rem)]">
           {NAV_ITEMS.map((item) => {
             const isActive =
               item.href === '/'
@@ -167,18 +174,37 @@ export default function Sidebar() {
         </nav>
       </div>
 
-      <div className="p-4 border-t border-neutral-800 bg-neutral-950">
-        <div className="p-3 rounded-xl bg-neutral-900/50 border border-neutral-800/80 flex items-center justify-between">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-neutral-800 border border-neutral-700 flex items-center justify-center text-xs font-bold text-neutral-300">
-              M
-            </div>
-            <div className="truncate">
-              <p className="text-xs font-bold text-white truncate">Main Station</p>
-              <p className="text-[10px] text-neutral-500 truncate font-mono">Store #01 • Online</p>
-            </div>
+      {/* FOOTER: BRANCH SWITCHER */}
+      <div className="p-3.5 border-t border-neutral-800 bg-neutral-950">
+        <div className="p-3 rounded-2xl bg-neutral-900/80 border border-neutral-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] uppercase font-bold text-neutral-400 tracking-wider flex items-center gap-1.5">
+              <span>📍</span>
+              <span>Active Branch:</span>
+            </span>
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
           </div>
-          <span className="text-emerald-400 text-xs font-bold">●</span>
+
+          <select
+            value={currentBranch?.id || ''}
+            onChange={(e) => {
+              const selected = branches.find((b) => b.id === e.target.value);
+              if (selected) setCurrentBranch(selected);
+            }}
+            className="w-full bg-neutral-950 border border-neutral-800 text-xs font-bold text-white rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-emerald-500 cursor-pointer"
+          >
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name} ({b.code})
+              </option>
+            ))}
+          </select>
+
+          {currentBranch && (
+            <p className="text-[10px] text-neutral-500 truncate font-mono">
+              {currentBranch.phone || currentBranch.address || 'Standard Store Outlet'}
+            </p>
+          )}
         </div>
       </div>
     </aside>

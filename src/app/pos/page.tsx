@@ -6,6 +6,7 @@ import Sidebar from '@/components/Sidebar';
 import ShiftModal, { CashShift } from '@/components/ShiftModal';
 import { useWakeLock } from '@/hooks/useWakeLock';
 import NetworkStatus from '@/components/NetworkStatus';
+import { useBranch } from '@/context/BranchContext';
 
 interface ProductItem {
   id: string;
@@ -104,6 +105,7 @@ function broadcastToCfd(supabase: any, type: string, payload: any) {
 
 export default function PosPage() {
   const supabase = createClient();
+  const { currentBranch } = useBranch();
   useWakeLock(true);
 
   // Active Staff & Lock Screen State
@@ -172,8 +174,9 @@ export default function PosPage() {
       orderType,
       isRush,
       cashierName: activeStaff.name,
+      branchName: currentBranch?.name || 'Main Station',
     });
-  }, [cart, cartSubtotal, orderType, isRush, activeStaff.name, supabase]);
+  }, [cart, cartSubtotal, orderType, isRush, activeStaff.name, currentBranch?.name, supabase]);
 
   // 1. Initialize Active Staff
   useEffect(() => {
@@ -198,52 +201,72 @@ export default function PosPage() {
     }
   }, [supabase]);
 
-  // 2. Load Products & Portions
+  // 2. Load Products with Branch Availability & Price Overrides
   const fetchProducts = useCallback(async () => {
+    if (!currentBranch?.id) return;
+
     try {
       setLoadingProducts(true);
-      const { data, error } = await supabase
-        .from('product_availability')
-        .select('id, name, category, selling_price, available_portions')
-        .order('name');
 
-      if (error) {
-        const { data: prodData } = await supabase
+      const [prodRes, bpRes] = await Promise.all([
+        supabase
           .from('products')
-          .select('id, name, category, selling_price')
+          .select('id, name, category, selling_price, is_active')
           .eq('is_active', true)
-          .order('name');
+          .order('name'),
+        supabase
+          .from('branch_products')
+          .select('product_id, is_available, price_override')
+          .eq('branch_id', currentBranch.id),
+      ]);
 
-        setProducts(
-          (prodData || []).map((p: any) => ({
-            ...p,
-            available_portions: 999,
-          }))
-        );
-      } else {
-        setProducts(
-          (data || []).map((p: any) => ({
+      if (prodRes.error) throw prodRes.error;
+
+      const overrideMap = new Map(
+        (bpRes.data || []).map((bp) => [bp.product_id, bp])
+      );
+
+      const branchMenu: ProductItem[] = [];
+
+      (prodRes.data || []).forEach((p: any) => {
+        const override = overrideMap.get(p.id);
+        const isAvailable = override ? override.is_available : true;
+
+        if (isAvailable) {
+          const effectivePrice =
+            override?.price_override !== null &&
+            override?.price_override !== undefined &&
+            Number(override.price_override) > 0
+              ? Number(override.price_override)
+              : Number(p.selling_price || 0);
+
+          branchMenu.push({
             id: p.id,
             name: p.name,
             category: p.category || 'General',
-            selling_price: Number(p.selling_price || 0),
-            available_portions: Number(p.available_portions ?? 0),
-          }))
-        );
-      }
+            selling_price: effectivePrice,
+            available_portions: 999,
+          });
+        }
+      });
+
+      setProducts(branchMenu);
     } catch (err: any) {
-      console.error('Error loading menu products:', err.message);
+      console.error('Error loading branch menu products:', err.message);
     } finally {
       setLoadingProducts(false);
     }
-  }, [supabase]);
+  }, [supabase, currentBranch?.id]);
 
-  // 3. Load Active Register Shift
+  // 3. Load Active Register Shift Scoped to Active Branch
   const fetchActiveShift = useCallback(async () => {
+    if (!currentBranch?.id) return;
+
     try {
       const { data } = await supabase
         .from('cash_shifts')
         .select('*')
+        .eq('branch_id', currentBranch.id)
         .eq('status', 'OPEN')
         .order('opened_at', { ascending: false })
         .limit(1)
@@ -253,7 +276,7 @@ export default function PosPage() {
     } catch (err: any) {
       console.error('Error loading cash shift:', err.message);
     }
-  }, [supabase]);
+  }, [supabase, currentBranch?.id]);
 
   // 4. Load Active Payment Methods & Providers
   const fetchPaymentMethods = useCallback(async () => {
@@ -553,7 +576,7 @@ export default function PosPage() {
         paymentDetails.reference_id = finalRef;
       }
 
-      // 1. Insert Sales Header (with is_rush, kds_status, and staff tracking)
+      // 1. Insert Sales Header (with branch_id, is_rush, and kds_status)
       const { data: saleData, error: saleErr } = await supabase
         .from('sales')
         .insert({
@@ -565,6 +588,7 @@ export default function PosPage() {
           kds_status: 'QUEUED',
           is_rush: isRush,
           staff_id: activeStaff.id || null,
+          branch_id: currentBranch?.id || null,
           order_type: orderType,
           notes: orderNotes.trim() || null,
           reference_number: finalRef,
@@ -617,7 +641,6 @@ export default function PosPage() {
         payment_details: paymentDetails,
       });
 
-      // Reset cart and modifiers
       setCart([]);
       setOrderNotes('');
       setTransactionRef('');
@@ -643,9 +666,19 @@ export default function PosPage() {
         {/* Catalog Section */}
         <section className="flex-1 flex flex-col min-w-0 border-r border-neutral-800">
           <header className="h-16 px-6 border-b border-neutral-800 bg-neutral-900/50 flex items-center justify-between flex-shrink-0">
-            <div>
-              <h1 className="text-lg font-bold text-white tracking-tight">POS Terminal</h1>
-              <p className="text-[11px] text-neutral-400">Direct order entry & modifier controls</p>
+            <div className="flex items-center gap-3">
+              <div>
+                <h1 className="text-lg font-bold text-white tracking-tight">POS Terminal</h1>
+                <p className="text-[11px] text-neutral-400">Direct order entry & modifier controls</p>
+              </div>
+
+              {/* Active Branch Pill */}
+              {currentBranch && (
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-full">
+                  <span>📍</span>
+                  <span>{currentBranch.name}</span>
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-3">
@@ -754,16 +787,19 @@ export default function PosPage() {
           <div className="flex-1 overflow-y-auto p-4">
             {loadingProducts ? (
               <div className="flex items-center justify-center h-48 text-neutral-500 text-xs">
-                Loading live menu and portions...
+                Loading branch menu and portion availability...
               </div>
             ) : filteredProducts.length === 0 ? (
-              <div className="flex items-center justify-center h-48 text-neutral-500 text-xs">
-                No matching menu items found.
+              <div className="flex flex-col items-center justify-center h-48 text-center text-neutral-500 space-y-1">
+                <span className="text-2xl">📋</span>
+                <p className="text-xs font-bold text-neutral-400">No items available for this branch.</p>
+                <p className="text-[11px] text-neutral-600">
+                  Assign dishes to this branch under Menu & Catalog or Branch Outlets.
+                </p>
               </div>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3.5">
                 {filteredProducts.map((product) => {
-                  const isSoldOut = product.available_portions <= 0;
                   const inCartCount = cart
                     .filter((c) => c.product.id === product.id)
                     .reduce((sum, c) => sum + c.quantity, 0);
@@ -771,12 +807,8 @@ export default function PosPage() {
                   return (
                     <div
                       key={product.id}
-                      onClick={() => !isSoldOut && handleAddToCartDirect(product)}
-                      className={`relative flex flex-col justify-between p-4 rounded-2xl border transition text-left cursor-pointer group ${
-                        isSoldOut
-                          ? 'bg-neutral-900/30 border-neutral-800/40 opacity-50 cursor-not-allowed'
-                          : 'bg-neutral-900/80 hover:bg-neutral-800/90 border-neutral-800 hover:border-neutral-700 active:scale-[0.98]'
-                      }`}
+                      onClick={() => handleAddToCartDirect(product)}
+                      className="relative flex flex-col justify-between p-4 rounded-2xl border transition text-left cursor-pointer group bg-neutral-900/80 hover:bg-neutral-800/90 border-neutral-800 hover:border-neutral-700 active:scale-[0.98]"
                     >
                       <div>
                         <div className="flex justify-between items-start mb-2">
@@ -802,24 +834,16 @@ export default function PosPage() {
                         </div>
 
                         <div className="flex items-center gap-1.5">
-                          {!isSoldOut && (
-                            <button
-                              type="button"
-                              onClick={(e) => handleOpenCustomize(product, e)}
-                              className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-[10px] font-bold text-neutral-300 transition cursor-pointer"
-                              title="Add custom modifiers & notes"
-                            >
-                              ⚙️ Mod
-                            </button>
-                          )}
-                          <span
-                            className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                              isSoldOut
-                                ? 'bg-rose-950/60 text-rose-400 border-rose-800/50'
-                                : 'bg-neutral-800/80 text-neutral-400 border-neutral-700/60'
-                            }`}
+                          <button
+                            type="button"
+                            onClick={(e) => handleOpenCustomize(product, e)}
+                            className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-[10px] font-bold text-neutral-300 transition cursor-pointer"
+                            title="Add custom modifiers & notes"
                           >
-                            {isSoldOut ? 'Sold Out' : `${product.available_portions} left`}
+                            ⚙️ Mod
+                          </button>
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border bg-neutral-800/80 text-neutral-400 border-neutral-700/60">
+                            In Stock
                           </span>
                         </div>
                       </div>
@@ -929,9 +953,8 @@ export default function PosPage() {
                       </span>
                       <button
                         type="button"
-                        disabled={item.quantity >= item.product.available_portions}
                         onClick={() => handleUpdateQuantity(item.id, 1)}
-                        className="w-6 h-6 flex items-center justify-center rounded bg-neutral-900 hover:bg-neutral-800 disabled:opacity-30 text-neutral-300 text-xs font-bold transition cursor-pointer"
+                        className="w-6 h-6 flex items-center justify-center rounded bg-neutral-900 hover:bg-neutral-800 text-neutral-300 text-xs font-bold transition cursor-pointer"
                       >
                         +
                       </button>
@@ -1419,6 +1442,11 @@ export default function PosPage() {
                 <h4 className="font-extrabold text-sm text-white tracking-widest uppercase print:text-black">
                   KITCHOS RESTAURANT
                 </h4>
+                {currentBranch && (
+                  <p className="text-[10px] text-emerald-400 print:text-neutral-700 font-bold uppercase">
+                    {currentBranch.name} ({currentBranch.code})
+                  </p>
+                )}
                 <p className="text-[10px] text-neutral-400 print:text-neutral-600 font-bold uppercase mt-0.5">
                   *** {lastSale.order_type === 'DINE_IN' ? 'DINE-IN' : 'TAKEAWAY'} ***
                 </p>

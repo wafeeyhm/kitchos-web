@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import { BranchProvider } from '@/context/BranchContext';
 
 export const metadata: Metadata = {
   title: 'KitchOS • F&B Point of Sale',
@@ -37,7 +38,9 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
       </head>
       <body className="overflow-hidden h-screen w-screen bg-neutral-950">
-        {children}
+        <BranchProvider>
+          {children}
+        </BranchProvider>
       </body>
     </html>
   );

@@ -5,6 +5,7 @@ import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
 import { useWakeLock } from '@/hooks/useWakeLock';
 import NetworkStatus from '@/components/NetworkStatus';
+import { useBranch } from '@/context/BranchContext';
 
 interface SaleItem {
   id: string;
@@ -21,6 +22,7 @@ interface SaleItem {
 interface KitchenTicket {
   id: string;
   created_at: string;
+  branch_id?: string | null;
   order_type: 'DINE_IN' | 'TAKEAWAY';
   kds_status: 'QUEUED' | 'IN_PREP' | 'READY' | 'SERVED';
   is_rush: boolean;
@@ -33,7 +35,7 @@ interface KitchenTicket {
 
 type StationFilter = 'ALL' | 'KITCHEN' | 'BARISTA';
 
-// Browser Web Audio API Chime (No external audio files needed)
+// Browser Web Audio API Chime (Synthesized sound without external mp3 files)
 function playNewOrderChime() {
   try {
     const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
@@ -65,13 +67,14 @@ function playNewOrderChime() {
     osc1.stop(ctx.currentTime + 0.6);
     osc2.stop(ctx.currentTime + 0.6);
   } catch (e) {
-    // Handled if browser policies require user interaction first
+    // Blocked until first user interaction on browser
   }
 }
 
 export default function KdsPage() {
   const supabase = createClient();
-  useWakeLock(true); // Keep secondary kitchen monitor awake
+  const { currentBranch } = useBranch();
+  useWakeLock(true); // Keep Kitchen Monitor Display Awake
 
   const [tickets, setTickets] = useState<KitchenTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,15 +84,17 @@ export default function KdsPage() {
 
   const knownTicketIds = useRef<Set<string>>(new Set());
 
-  // 1. Fetch Active Kitchen Tickets
+  // 1. Fetch Active Kitchen Tickets (Scoped to Active Branch)
   const fetchTickets = useCallback(async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
+
+      let query = supabase
         .from('sales')
         .select(`
           id,
           created_at,
+          branch_id,
           order_type,
           kds_status,
           is_rush,
@@ -108,11 +113,16 @@ export default function KdsPage() {
         .in('kds_status', ['QUEUED', 'IN_PREP', 'READY'])
         .order('created_at', { ascending: true });
 
+      if (currentBranch) {
+        query = query.eq('branch_id', currentBranch.id);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
 
       const formatted = (data as any) || [];
 
-      // Detect incoming tickets to trigger chime
+      // Detect incoming new tickets to trigger audio chime
       if (knownTicketIds.current.size > 0) {
         const hasNewTicket = formatted.some(
           (t: KitchenTicket) =>
@@ -131,9 +141,9 @@ export default function KdsPage() {
     } finally {
       setLoading(false);
     }
-  }, [supabase, audioEnabled]);
+  }, [supabase, currentBranch, audioEnabled]);
 
-  // 2. Realtime Subscription & Clock Tick
+  // 2. Realtime Listener & Periodic Clock Update
   useEffect(() => {
     fetchTickets();
 
@@ -159,6 +169,7 @@ export default function KdsPage() {
 
   // 3. Toggle Individual Item Strikethrough
   const handleToggleItemPrepared = async (itemId: string, currentStatus: boolean) => {
+    // Optimistic UI update
     setTickets((prev) =>
       prev.map((t) => ({
         ...t,
@@ -181,7 +192,7 @@ export default function KdsPage() {
     }
   };
 
-  // 4. Update Ticket Workflow Stage
+  // 4. Update Ticket Workflow Kanban Stage
   const handleUpdateTicketStatus = async (
     ticketId: string,
     newStatus: KitchenTicket['kds_status']
@@ -267,7 +278,7 @@ export default function KdsPage() {
     });
   }, [tickets, stationFilter]);
 
-  // Group tickets into Kanban columns
+  // Group tickets into 3 Kanban columns
   const queuedTickets = useMemo(
     () => sortTickets(stationFilteredTickets.filter((t) => t.kds_status === 'QUEUED')),
     [stationFilteredTickets]
@@ -495,6 +506,13 @@ export default function KdsPage() {
               <span>Kitchen Display System</span>
             </h1>
 
+            {/* Active Branch Pill */}
+            {currentBranch && (
+              <span className="text-[11px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-2.5 py-1 rounded-full">
+                📍 {currentBranch.name}
+              </span>
+            )}
+
             <span className="bg-neutral-800 text-neutral-300 font-mono text-xs font-bold px-2.5 py-1 rounded-full border border-neutral-700">
               {stationFilteredTickets.length} Active Orders
             </span>
@@ -525,7 +543,7 @@ export default function KdsPage() {
               ))}
             </div>
 
-            {/* Audio Chime Mute Toggle */}
+            {/* Audio Chime Toggle */}
             <button
               type="button"
               onClick={() => setAudioEnabled(!audioEnabled)}

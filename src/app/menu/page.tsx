@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
 import ManagerGuard from '@/components/ManagerGuard';
+import { useBranch, Branch } from '@/context/BranchContext';
 
 interface Product {
   id: string;
@@ -16,13 +17,25 @@ interface Product {
   created_at: string;
 }
 
+interface BranchAssignment {
+  branch_id: string;
+  branch_name: string;
+  branch_code: string;
+  is_available: boolean;
+  price_override: string;
+}
+
 export default function MenuCatalogPage() {
   const supabase = createClient();
+  const { branches, loadingBranches } = useBranch();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
+
+  // Branch Products Map: { [productId]: BranchAssignment[] }
+  const [productBranchMap, setProductBranchMap] = useState<Record<string, BranchAssignment[]>>({});
 
   // Product Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -33,31 +46,59 @@ export default function MenuCatalogPage() {
   const [sellingPrice, setSellingPrice] = useState('');
   const [description, setDescription] = useState('');
   const [isActive, setIsActive] = useState(true);
+
+  // Per-branch assignments state inside modal
+  const [branchAssignments, setBranchAssignments] = useState<Record<string, { is_available: boolean; price_override: string }>>({});
+
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const fetchProducts = useCallback(async () => {
+  // Fetch Products and their Branch Mappings
+  const fetchProductsAndBranchData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .order('name');
+      const [prodRes, bpRes] = await Promise.all([
+        supabase.from('products').select('*').order('name'),
+        supabase.from('branch_products').select('branch_id, product_id, is_available, price_override'),
+      ]);
 
-      if (error) throw error;
-      setProducts((data as any) || []);
+      if (prodRes.error) throw prodRes.error;
+
+      const prods = (prodRes.data as any) || [];
+      setProducts(prods);
+
+      // Build product-to-branch lookup
+      const bpList = bpRes.data || [];
+      const map: Record<string, BranchAssignment[]> = {};
+
+      prods.forEach((p: Product) => {
+        map[p.id] = branches.map((b) => {
+          const match = bpList.find((bp: any) => bp.product_id === p.id && bp.branch_id === b.id);
+          return {
+            branch_id: b.id,
+            branch_name: b.name,
+            branch_code: b.code,
+            is_available: match ? match.is_available : true,
+            price_override: match && match.price_override !== null ? match.price_override.toString() : '',
+          };
+        });
+      });
+
+      setProductBranchMap(map);
     } catch (err: any) {
-      console.error('Error fetching menu items:', err.message);
+      console.error('Error fetching menu items & branch links:', err.message);
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, [supabase, branches]);
 
   useEffect(() => {
-    fetchProducts();
-  }, [fetchProducts]);
+    if (branches.length > 0) {
+      fetchProductsAndBranchData();
+    }
+  }, [fetchProductsAndBranchData, branches.length]);
 
-  // Unique categories for filter bar
+  // Categories list for filter bar
   const categories = useMemo(() => {
     const set = new Set(products.map((p) => p.category));
     return ['ALL', ...Array.from(set)];
@@ -73,6 +114,7 @@ export default function MenuCatalogPage() {
     });
   }, [products, categoryFilter, searchQuery]);
 
+  // Open "Add Menu Product"
   const handleOpenAdd = () => {
     setEditingProduct(null);
     setName('');
@@ -81,13 +123,23 @@ export default function MenuCatalogPage() {
     setSellingPrice('');
     setDescription('');
     setIsActive(true);
+
+    // Default all active branches to available
+    const initialAssignments: Record<string, { is_available: boolean; price_override: string }> = {};
+    branches.forEach((b) => {
+      initialAssignments[b.id] = { is_available: true, price_override: '' };
+    });
+    setBranchAssignments(initialAssignments);
+
     setErrorMsg(null);
     setIsModalOpen(true);
   };
 
+  // Open "Edit Menu Product"
   const handleOpenEdit = (product: Product) => {
     setEditingProduct(product);
     setName(product.name);
+
     const standardCategories = ['Food', 'Beverages', 'Pastries', 'Desserts', 'Merchandise'];
     if (standardCategories.includes(product.category)) {
       setCategory(product.category);
@@ -96,13 +148,51 @@ export default function MenuCatalogPage() {
       setCategory('Custom');
       setCustomCategory(product.category);
     }
+
     setSellingPrice(product.selling_price.toString());
     setDescription(product.description || '');
     setIsActive(product.is_active);
+
+    // Populate current assignments from lookup
+    const existing = productBranchMap[product.id] || [];
+    const assignments: Record<string, { is_available: boolean; price_override: string }> = {};
+
+    branches.forEach((b) => {
+      const found = existing.find((e) => e.branch_id === b.id);
+      assignments[b.id] = {
+        is_available: found ? found.is_available : true,
+        price_override: found?.price_override || '',
+      };
+    });
+
+    setBranchAssignments(assignments);
     setErrorMsg(null);
     setIsModalOpen(true);
   };
 
+  // Toggle branch availability inside modal
+  const handleToggleBranchInModal = (branchId: string) => {
+    setBranchAssignments((prev) => ({
+      ...prev,
+      [branchId]: {
+        ...prev[branchId],
+        is_available: !prev[branchId]?.is_available,
+      },
+    }));
+  };
+
+  // Set branch price override inside modal
+  const handlePriceOverrideChange = (branchId: string, val: string) => {
+    setBranchAssignments((prev) => ({
+      ...prev,
+      [branchId]: {
+        ...prev[branchId],
+        price_override: val,
+      },
+    }));
+  };
+
+  // Save Product and Upsert Branch Assignments
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
@@ -112,7 +202,7 @@ export default function MenuCatalogPage() {
 
     const price = parseFloat(sellingPrice);
     if (isNaN(price) || price < 0) {
-      setErrorMsg('Please enter a valid selling price.');
+      setErrorMsg('Please enter a valid base selling price.');
       return;
     }
 
@@ -122,8 +212,10 @@ export default function MenuCatalogPage() {
     setErrorMsg(null);
 
     try {
+      let savedProductId = editingProduct?.id;
+
       if (editingProduct) {
-        // Update product
+        // 1. Update product
         const { error } = await supabase
           .from('products')
           .update({
@@ -137,27 +229,57 @@ export default function MenuCatalogPage() {
 
         if (error) throw error;
       } else {
-        // Create new product
-        const { error } = await supabase.from('products').insert({
-          name: name.trim(),
-          category: finalCategory,
-          selling_price: price,
-          description: description.trim() || null,
-          is_active: isActive,
-        });
+        // 1. Create product
+        const { data: newProd, error } = await supabase
+          .from('products')
+          .insert({
+            name: name.trim(),
+            category: finalCategory,
+            selling_price: price,
+            description: description.trim() || null,
+            is_active: isActive,
+          })
+          .select('id')
+          .single();
 
         if (error) throw error;
+        savedProductId = newProd.id;
+      }
+
+      // 2. Sync branch assignments into branch_products
+      if (savedProductId) {
+        const branchUpserts = branches.map((b) => {
+          const assign = branchAssignments[b.id];
+          const overrideVal =
+            assign?.price_override && !isNaN(parseFloat(assign.price_override))
+              ? parseFloat(assign.price_override)
+              : null;
+
+          return {
+            branch_id: b.id,
+            product_id: savedProductId,
+            is_available: assign ? assign.is_available : true,
+            price_override: overrideVal,
+          };
+        });
+
+        const { error: bpErr } = await supabase
+          .from('branch_products')
+          .upsert(branchUpserts, { onConflict: 'branch_id,product_id' });
+
+        if (bpErr) throw bpErr;
       }
 
       setIsModalOpen(false);
-      fetchProducts();
+      fetchProductsAndBranchData();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to save product.');
+      setErrorMsg(err.message || 'Failed to save menu product.');
     } finally {
       setIsSaving(false);
     }
   };
 
+  // Fast toggle product active status
   const handleToggleStatus = async (product: Product) => {
     try {
       const { error } = await supabase
@@ -166,7 +288,7 @@ export default function MenuCatalogPage() {
         .eq('id', product.id);
 
       if (error) throw error;
-      fetchProducts();
+      fetchProductsAndBranchData();
     } catch (err: any) {
       alert(`Could not update status: ${err.message}`);
     }
@@ -175,7 +297,7 @@ export default function MenuCatalogPage() {
   return (
     <ManagerGuard
       pageTitle="Menu & Product Catalog"
-      description="Creating, re-pricing, and managing restaurant menu products requires Manager authorization."
+      description="Creating, re-pricing, and managing restaurant menu items across branches requires Manager authorization."
     >
       <div className="flex h-screen bg-neutral-950 font-sans text-neutral-100 overflow-hidden">
         <div className="h-full flex-shrink-0">
@@ -183,12 +305,12 @@ export default function MenuCatalogPage() {
         </div>
 
         <main className="flex-1 flex flex-col overflow-y-auto p-8 space-y-6 bg-neutral-950">
-          {/* Header */}
+          {/* Top Header */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-800 pb-5">
             <div>
               <h1 className="text-2xl font-black text-white tracking-tight">Menu & Product Catalog</h1>
               <p className="text-xs text-neutral-400 mt-1">
-                Configure your active POS menu items, categories, pricing, and link ingredient recipes.
+                Configure your dishes, categories, base pricing, and assign availability per branch outlet.
               </p>
             </div>
 
@@ -202,7 +324,7 @@ export default function MenuCatalogPage() {
 
           {/* Filters Bar */}
           <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex gap-2 overflow-x-auto">
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
               {categories.map((cat) => (
                 <button
                   key={cat}
@@ -221,7 +343,7 @@ export default function MenuCatalogPage() {
             <div className="w-full sm:w-72">
               <input
                 type="text"
-                placeholder="Search dish or beverage..."
+                placeholder="Search dish, beverage or description..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
@@ -237,83 +359,128 @@ export default function MenuCatalogPage() {
               </p>
             ) : filteredProducts.length === 0 ? (
               <p className="text-xs text-neutral-500 col-span-full text-center py-12">
-                No products found. Click "+ Add Menu Product" to add your first item.
+                No products found. Click "+ Add Menu Product" to get started.
               </p>
             ) : (
-              filteredProducts.map((product) => (
-                <div
-                  key={product.id}
-                  className={`bg-neutral-900/70 border rounded-2xl p-5 flex flex-col justify-between space-y-4 transition ${
-                    product.is_active
-                      ? 'border-neutral-800/80 hover:border-neutral-700'
-                      : 'border-neutral-900 opacity-60'
-                  }`}
-                >
-                  <div>
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md">
-                        {product.category}
-                      </span>
-                      <button
-                        onClick={() => handleToggleStatus(product)}
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border cursor-pointer ${
-                          product.is_active
-                            ? 'bg-neutral-800 text-neutral-300 border-neutral-700'
-                            : 'bg-rose-950/40 text-rose-400 border-rose-900/60'
-                        }`}
-                      >
-                        {product.is_active ? 'Active' : 'Hidden'}
-                      </button>
-                    </div>
+              filteredProducts.map((product) => {
+                const branchList = productBranchMap[product.id] || [];
+                const availableBranches = branchList.filter((b) => b.is_available);
+                const allBranchesAvailable =
+                  branches.length > 0 && availableBranches.length === branches.length;
 
-                    <h3 className="font-bold text-base text-white">{product.name}</h3>
-                    {product.description && (
-                      <p className="text-xs text-neutral-400 mt-1 line-clamp-2">
-                        {product.description}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="pt-3 border-t border-neutral-800/60 flex items-center justify-between">
+                return (
+                  <div
+                    key={product.id}
+                    className={`bg-neutral-900/70 border rounded-2xl p-5 flex flex-col justify-between space-y-4 transition ${
+                      product.is_active
+                        ? 'border-neutral-800/80 hover:border-neutral-700'
+                        : 'border-neutral-900 opacity-60'
+                    }`}
+                  >
                     <div>
-                      <span className="text-[10px] text-neutral-500 block">Selling Price</span>
-                      <span className="font-mono text-lg font-black text-emerald-400">
-                        ${Number(product.selling_price).toFixed(2)}
-                      </span>
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md">
+                          {product.category}
+                        </span>
+                        <button
+                          onClick={() => handleToggleStatus(product)}
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full border cursor-pointer ${
+                            product.is_active
+                              ? 'bg-neutral-800 text-neutral-300 border-neutral-700'
+                              : 'bg-rose-950/40 text-rose-400 border-rose-900/60'
+                          }`}
+                        >
+                          {product.is_active ? 'Active' : 'Hidden'}
+                        </button>
+                      </div>
+
+                      <h3 className="font-bold text-base text-white">{product.name}</h3>
+                      {product.description && (
+                        <p className="text-xs text-neutral-400 mt-1 line-clamp-2">
+                          {product.description}
+                        </p>
+                      )}
+
+                      {/* BRANCH OUTLET AVAILABILITY BADGES */}
+                      <div className="mt-3 pt-3 border-t border-neutral-800/60 space-y-1">
+                        <span className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider block">
+                          Available Outlets:
+                        </span>
+
+                        {availableBranches.length === 0 ? (
+                          <span className="inline-block text-[10px] text-rose-400 bg-rose-950/60 border border-rose-900/60 px-2 py-0.5 rounded-md font-bold">
+                            Not available at any branch
+                          </span>
+                        ) : allBranchesAvailable ? (
+                          <span className="inline-block text-[10px] text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md font-bold">
+                            ✓ All {branches.length} Branches
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {availableBranches.map((ab) => (
+                              <span
+                                key={ab.branch_id}
+                                className="text-[10px] text-neutral-300 bg-neutral-800/90 border border-neutral-700 px-1.5 py-0.5 rounded font-mono"
+                                title={
+                                  ab.price_override
+                                    ? `${ab.branch_name} (Override: $${ab.price_override})`
+                                    : ab.branch_name
+                                }
+                              >
+                                {ab.branch_code}
+                                {ab.price_override && (
+                                  <span className="text-emerald-400 font-bold ml-1">
+                                    ${ab.price_override}
+                                  </span>
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5">
-                      <Link
-                        href="/recipes"
-                        className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold transition"
-                        title="Configure ingredients and recipe BOM"
-                      >
-                        📖 Recipe
-                      </Link>
-                      <button
-                        onClick={() => handleOpenEdit(product)}
-                        className="bg-neutral-800 hover:bg-neutral-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
-                      >
-                        Edit
-                      </button>
+                    <div className="pt-3 border-t border-neutral-800/60 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] text-neutral-500 block">Base Price</span>
+                        <span className="font-mono text-lg font-black text-emerald-400">
+                          ${Number(product.selling_price).toFixed(2)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <Link
+                          href="/recipes"
+                          className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold transition"
+                          title="Configure COGS & recipe BOM"
+                        >
+                          📖 BOM
+                        </Link>
+                        <button
+                          onClick={() => handleOpenEdit(product)}
+                          className="bg-neutral-800 hover:bg-neutral-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+                        >
+                          Edit & Outlets
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
-          {/* ADD / EDIT PRODUCT MODAL */}
+          {/* MODAL: ADD / EDIT PRODUCT WITH PER-BRANCH ASSIGNMENT */}
           {isModalOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-              <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+              <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
                 <div className="flex justify-between items-start border-b border-neutral-800 pb-3">
                   <div>
                     <h3 className="text-lg font-bold text-white">
                       {editingProduct ? 'Edit Menu Product' : 'Add New Menu Product'}
                     </h3>
                     <p className="text-xs text-neutral-400">
-                      Product appears immediately on `/pos` and `/kds`.
+                      Configure details and select which branch outlets serve this dish.
                     </p>
                   </div>
                   <button
@@ -324,7 +491,7 @@ export default function MenuCatalogPage() {
                   </button>
                 </div>
 
-                <form onSubmit={handleSaveProduct} className="space-y-3.5 text-xs">
+                <form onSubmit={handleSaveProduct} className="space-y-4 text-xs">
                   <div>
                     <label className="block text-neutral-300 font-medium mb-1">Product Name *</label>
                     <input
@@ -356,7 +523,7 @@ export default function MenuCatalogPage() {
 
                     <div>
                       <label className="block text-neutral-300 font-medium mb-1">
-                        Selling Price ($) *
+                        Base Selling Price ($) *
                       </label>
                       <input
                         type="number"
@@ -388,15 +555,114 @@ export default function MenuCatalogPage() {
 
                   <div>
                     <label className="block text-neutral-300 font-medium mb-1">
-                      Description / Kitchen Prep Notes
+                      Description / Kitchen Preparation Notes
                     </label>
                     <textarea
                       rows={2}
-                      placeholder="Optional notes or customer-facing description..."
+                      placeholder="Optional customer description or recipe notes..."
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
                       className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
                     />
+                  </div>
+
+                  {/* BRANCH OUTLET ASSIGNMENTS SECTION */}
+                  <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider block">
+                          Branch Availability & Price Overrides
+                        </span>
+                        <p className="text-[11px] text-neutral-500">
+                          Select which branches sell this item and optionally override the price.
+                        </p>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated: any = { ...branchAssignments };
+                            branches.forEach((b) => {
+                              updated[b.id] = { ...updated[b.id], is_available: true };
+                            });
+                            setBranchAssignments(updated);
+                          }}
+                          className="text-[10px] text-emerald-400 hover:underline cursor-pointer"
+                        >
+                          Select All
+                        </button>
+                        <span className="text-neutral-700">|</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated: any = { ...branchAssignments };
+                            branches.forEach((b) => {
+                              updated[b.id] = { ...updated[b.id], is_available: false };
+                            });
+                            setBranchAssignments(updated);
+                          }}
+                          className="text-[10px] text-neutral-400 hover:underline cursor-pointer"
+                        >
+                          Clear All
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                      {branches.map((branch) => {
+                        const assign = branchAssignments[branch.id] || {
+                          is_available: true,
+                          price_override: '',
+                        };
+
+                        return (
+                          <div
+                            key={branch.id}
+                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 transition ${
+                              assign.is_available
+                                ? 'bg-neutral-900/80 border-neutral-800'
+                                : 'bg-neutral-950 border-neutral-900 opacity-50'
+                            }`}
+                          >
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={assign.is_available}
+                                onChange={() => handleToggleBranchInModal(branch.id)}
+                                className="w-4 h-4 rounded border-neutral-700 bg-neutral-950 text-emerald-500 cursor-pointer"
+                              />
+                              <div className="truncate">
+                                <span className="font-bold text-white text-xs block truncate">
+                                  {branch.name}
+                                </span>
+                                <span className="text-[10px] text-neutral-500 font-mono">
+                                  Code: {branch.code}
+                                </span>
+                              </div>
+                            </label>
+
+                            {assign.is_available && (
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                <span className="text-[10px] text-neutral-400">Override $:</span>
+                                <input
+                                  type="number"
+                                  step="0.05"
+                                  min="0"
+                                  placeholder={sellingPrice || 'Base'}
+                                  value={assign.price_override}
+                                  onChange={(e) =>
+                                    handlePriceOverrideChange(branch.id, e.target.value)
+                                  }
+                                  className="w-20 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-1 text-xs text-white font-mono text-center focus:outline-none focus:border-emerald-500"
+                                  title="Leave blank to use standard base price"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2 pt-1">
@@ -408,7 +674,7 @@ export default function MenuCatalogPage() {
                       className="w-4 h-4 rounded border-neutral-700 bg-neutral-900 text-emerald-500 cursor-pointer"
                     />
                     <label htmlFor="isActiveProduct" className="text-xs text-neutral-300 cursor-pointer">
-                      Visible on Active POS Terminal Menu
+                      Visible in Global Active Menu Catalog
                     </label>
                   </div>
 
