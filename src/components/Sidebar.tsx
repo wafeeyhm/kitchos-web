@@ -28,6 +28,11 @@ const NAV_ITEMS: NavItem[] = [
     badge: 'Live',
   },
   {
+    name: 'Menu & Catalog',
+    href: '/menu',
+    icon: '📋',
+  },
+  {
     name: 'Sales & Orders',
     href: '/sales',
     icon: '🧾',
@@ -46,6 +51,11 @@ const NAV_ITEMS: NavItem[] = [
     name: 'Inventory & Waste',
     href: '/inventory',
     icon: '📦',
+  },
+  {
+    name: 'Staff Directory',
+    href: '/staff',
+    icon: '👥',
   },
 ];
 
@@ -73,7 +83,7 @@ export default function Sidebar() {
           <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" title="System Online" />
         </div>
 
-        <nav className="p-3.5 space-y-1.5">
+        <nav className="p-3.5 space-y-1 overflow-y-auto max-h-[calc(100vh-8rem)]">
           {NAV_ITEMS.map((item) => {
             const isActive =
               item.href === '/'

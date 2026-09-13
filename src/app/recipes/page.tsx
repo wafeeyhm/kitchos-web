@@ -9,6 +9,9 @@ interface InventoryItem {
   id: string;
   name: string;
   unit_of_measure: string;
+  package_unit?: string;
+  package_size?: number;
+  purchase_price?: number;
   cost_per_unit: number;
 }
 
@@ -43,15 +46,18 @@ export default function RecipesPage() {
   const [isSavingBom, setIsSavingBom] = useState(false);
 
   // Price & Target Margin Calculator
-  const [targetMargin, setTargetMargin] = useState<number>(70); // 70% default F&B target margin
+  const [targetMargin, setTargetMargin] = useState<number>(70);
   const [newSellingPrice, setNewSellingPrice] = useState<string>('');
   const [isUpdatingPrice, setIsUpdatingPrice] = useState(false);
 
-  // Quick Raw Ingredient Modal
+  // Packaging-to-Portion Raw Ingredient Modal State
   const [isNewIngredientOpen, setIsNewIngredientOpen] = useState(false);
   const [newIngName, setNewIngName] = useState('');
+  const [newIngPackageUnit, setNewIngPackageUnit] = useState('Bag');
+  const [newIngPurchasePrice, setNewIngPurchasePrice] = useState('18.00');
+  const [newIngPackageSize, setNewIngPackageSize] = useState('1000');
   const [newIngUnit, setNewIngUnit] = useState('g');
-  const [newIngCost, setNewIngCost] = useState('0.01');
+  const [isSavingIngredient, setIsSavingIngredient] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -110,7 +116,6 @@ export default function RecipesPage() {
     fetchData();
   }, [fetchData]);
 
-  // When selected product changes
   useEffect(() => {
     if (selectedProduct) {
       setBomItems(selectedProduct.recipe_bom || []);
@@ -118,7 +123,14 @@ export default function RecipesPage() {
     }
   }, [selectedProduct]);
 
-  // Calculate COGS for current active product
+  // Live Unit Cost calculation for the inline ingredient modal
+  const computedModalUnitCost = useMemo(() => {
+    const price = parseFloat(newIngPurchasePrice) || 0;
+    const size = parseFloat(newIngPackageSize) || 1;
+    return size > 0 ? price / size : 0;
+  }, [newIngPurchasePrice, newIngPackageSize]);
+
+  // Current Recipe COGS
   const currentCogs = useMemo(() => {
     return bomItems.reduce((sum, item) => {
       const unitCost = Number(item.inventory_item?.cost_per_unit || 0);
@@ -130,7 +142,7 @@ export default function RecipesPage() {
   const currentGrossProfit = currentPrice - currentCogs;
   const currentMarginPercent = currentPrice > 0 ? (currentGrossProfit / currentPrice) * 100 : 0;
 
-  // Recommended Price based on Target Margin Formula: COGS / (1 - (Margin / 100))
+  // Target Margin Recommendation
   const recommendedPrice = useMemo(() => {
     const marginDecimal = targetMargin / 100;
     if (marginDecimal >= 1) return currentCogs * 2;
@@ -193,20 +205,28 @@ export default function RecipesPage() {
     }
   };
 
-  // Create On-the-fly Raw Ingredient
+  // Create Ingredient with Bulk Packaging -> Portion Unit Cost Auto-Calculation
   const handleCreateIngredient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newIngName.trim()) return;
 
+    setIsSavingIngredient(true);
     try {
+      const price = parseFloat(newIngPurchasePrice) || 0;
+      const size = parseFloat(newIngPackageSize) || 1;
+      const calculatedUnitCost = size > 0 ? price / size : 0;
+
       const { data, error } = await supabase
         .from('inventory_items')
         .insert({
           name: newIngName.trim(),
+          package_unit: newIngPackageUnit.trim(),
+          purchase_price: price,
+          package_size: size,
           unit_of_measure: newIngUnit,
-          quantity_in_stock: 1000,
-          cost_per_unit: parseFloat(newIngCost) || 0.01,
-          low_stock_alert: 100,
+          cost_per_unit: calculatedUnitCost,
+          quantity_in_stock: size,
+          low_stock_alert: Math.round(size * 0.15) || 10,
         })
         .select('id')
         .single();
@@ -219,6 +239,8 @@ export default function RecipesPage() {
       fetchData();
     } catch (err: any) {
       alert(`Failed to create ingredient: ${err.message}`);
+    } finally {
+      setIsSavingIngredient(false);
     }
   };
 
@@ -249,10 +271,13 @@ export default function RecipesPage() {
                 products.map((p) => {
                   const isSelected = selectedProduct?.id === p.id;
                   const cogs = (p.recipe_bom || []).reduce(
-                    (sum, item) => sum + item.quantity_required * Number(item.inventory_item?.cost_per_unit || 0),
+                    (sum, item) =>
+                      sum +
+                      item.quantity_required * Number(item.inventory_item?.cost_per_unit || 0),
                     0
                   );
-                  const margin = p.selling_price > 0 ? ((p.selling_price - cogs) / p.selling_price) * 100 : 0;
+                  const margin =
+                    p.selling_price > 0 ? ((p.selling_price - cogs) / p.selling_price) * 100 : 0;
 
                   return (
                     <button
@@ -272,7 +297,11 @@ export default function RecipesPage() {
                       </div>
                       <div className="flex justify-between items-center text-[10px] text-neutral-400 font-mono">
                         <span>COGS: ${cogs.toFixed(2)}</span>
-                        <span className={margin < 60 ? 'text-amber-400 font-bold' : 'text-emerald-400 font-bold'}>
+                        <span
+                          className={
+                            margin < 60 ? 'text-amber-400 font-bold' : 'text-emerald-400 font-bold'
+                          }
+                        >
                           {margin.toFixed(0)}% margin
                         </span>
                       </div>
@@ -384,7 +413,10 @@ export default function RecipesPage() {
                   <button
                     onClick={() => {
                       setNewIngName('');
-                      setNewIngCost('0.01');
+                      setNewIngPurchasePrice('18.00');
+                      setNewIngPackageSize('1000');
+                      setNewIngPackageUnit('Bag');
+                      setNewIngUnit('g');
                       setIsNewIngredientOpen(true);
                     }}
                     className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold cursor-pointer"
@@ -394,7 +426,10 @@ export default function RecipesPage() {
                 </div>
 
                 {/* Add Ingredient Form */}
-                <form onSubmit={handleAddBomItem} className="flex gap-3 bg-neutral-950 p-3 rounded-xl border border-neutral-800">
+                <form
+                  onSubmit={handleAddBomItem}
+                  className="flex gap-3 bg-neutral-950 p-3 rounded-xl border border-neutral-800"
+                >
                   <div className="flex-1">
                     <select
                       value={selectedIngredientId}
@@ -405,7 +440,7 @@ export default function RecipesPage() {
                       <option value="">Select Raw Ingredient from Inventory...</option>
                       {inventory.map((inv) => (
                         <option key={inv.id} value={inv.id}>
-                          {inv.name} (Unit Cost: ${Number(inv.cost_per_unit || 0).toFixed(4)} / {inv.unit_of_measure})
+                          {inv.name} (${Number(inv.cost_per_unit || 0).toFixed(4)} / {inv.unit_of_measure})
                         </option>
                       ))}
                     </select>
@@ -448,7 +483,7 @@ export default function RecipesPage() {
                     {bomItems.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-8 text-center text-neutral-500">
-                          No ingredients mapped to this recipe yet. POS sales cannot deduct stock until BOM items are added.
+                          No ingredients mapped to this recipe yet.
                         </td>
                       </tr>
                     ) : (
@@ -492,66 +527,124 @@ export default function RecipesPage() {
             </div>
           )}
 
-          {/* ON-THE-FLY INGREDIENT MODAL */}
+          {/* BULK PACKAGING TO PORTION AUTO-COGS MODAL */}
           {isNewIngredientOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-              <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-                <h3 className="text-lg font-bold text-white">Create Raw Ingredient</h3>
-
-                <form onSubmit={handleCreateIngredient} className="space-y-3 text-xs">
+              <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+                <div className="flex justify-between items-start border-b border-neutral-800 pb-3">
                   <div>
-                    <label className="block text-neutral-300 mb-1">Ingredient Name *</label>
+                    <h3 className="text-lg font-bold text-white">Create Raw Ingredient</h3>
+                    <p className="text-xs text-neutral-400">
+                      Specify wholesale purchase packaging to auto-derive recipe portion costs
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setIsNewIngredientOpen(false)}
+                    className="text-neutral-400 hover:text-white text-sm font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <form onSubmit={handleCreateIngredient} className="space-y-3.5 text-xs">
+                  <div>
+                    <label className="block text-neutral-300 font-medium mb-1">
+                      Ingredient Name *
+                    </label>
                     <input
                       type="text"
                       required
-                      placeholder="e.g. Espresso Beans"
+                      placeholder="e.g. Arabica Espresso Beans, Whole Milk"
                       value={newIngName}
                       onChange={(e) => setNewIngName(e.target.value)}
                       className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-neutral-300 mb-1">Unit of Measure</label>
-                    <select
-                      value={newIngUnit}
-                      onChange={(e) => setNewIngUnit(e.target.value)}
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white"
-                    >
-                      <option value="g">Grams (g)</option>
-                      <option value="ml">Milliliters (ml)</option>
-                      <option value="pcs">Pieces (pcs)</option>
-                      <option value="packs">Packs</option>
-                      <option value="kg">Kilograms (kg)</option>
-                    </select>
-                  </div>
+                  <div className="p-3.5 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-2.5">
+                    <span className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">
+                      Wholesale Packaging to Portion Conversion
+                    </span>
 
-                  <div>
-                    <label className="block text-neutral-300 mb-1">Cost Per Unit ($)</label>
-                    <input
-                      type="number"
-                      step="0.0001"
-                      min="0"
-                      required
-                      value={newIngCost}
-                      onChange={(e) => setNewIngCost(e.target.value)}
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white font-mono"
-                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-neutral-400 mb-1">Package Unit Name</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 1kg Bag, Carton"
+                          value={newIngPackageUnit}
+                          onChange={(e) => setNewIngPackageUnit(e.target.value)}
+                          className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5 text-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-neutral-400 mb-1">Wholesale Purchase Price ($)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          required
+                          value={newIngPurchasePrice}
+                          onChange={(e) => setNewIngPurchasePrice(e.target.value)}
+                          className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5 text-white font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-neutral-400 mb-1">Package Net Quantity</label>
+                        <input
+                          type="number"
+                          step="any"
+                          min="0.1"
+                          required
+                          placeholder="1000"
+                          value={newIngPackageSize}
+                          onChange={(e) => setNewIngPackageSize(e.target.value)}
+                          className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5 text-white font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-neutral-400 mb-1">Recipe Portion Unit</label>
+                        <select
+                          value={newIngUnit}
+                          onChange={(e) => setNewIngUnit(e.target.value)}
+                          className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-1.5 text-white"
+                        >
+                          <option value="g">Grams (g)</option>
+                          <option value="ml">Milliliters (ml)</option>
+                          <option value="pcs">Pieces (pcs)</option>
+                          <option value="shots">Shots</option>
+                          <option value="kg">Kilograms (kg)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-neutral-900 flex justify-between items-center text-neutral-400">
+                      <span>Derived Portion Cost:</span>
+                      <span className="font-mono font-bold text-emerald-400 text-sm">
+                        ${computedModalUnitCost.toFixed(4)} / {newIngUnit}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="flex justify-end gap-2 pt-2 border-t border-neutral-800">
                     <button
                       type="button"
                       onClick={() => setIsNewIngredientOpen(false)}
-                      className="px-3 py-1.5 text-neutral-400 hover:text-white bg-neutral-800 rounded-xl cursor-pointer"
+                      className="px-3.5 py-2 text-neutral-400 hover:text-white bg-neutral-800 rounded-xl cursor-pointer"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
-                      className="px-4 py-1.5 font-bold text-neutral-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition cursor-pointer"
+                      disabled={isSavingIngredient}
+                      className="px-4 py-2 font-bold text-neutral-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition cursor-pointer"
                     >
-                      Save Ingredient
+                      {isSavingIngredient ? 'Saving...' : 'Save & Link to Recipe'}
                     </button>
                   </div>
                 </form>

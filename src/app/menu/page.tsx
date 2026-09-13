@@ -1,332 +1,445 @@
-'use client'
+'use client';
 
-import { useState, useEffect, useCallback } from 'react'
-import { createClient } from '@/utils/supabase/client'
-import { useRouter } from 'next/navigation'
-import Sidebar from '@/components/Sidebar'
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import Link from 'next/link';
+import { createClient } from '@/utils/supabase/client';
+import Sidebar from '@/components/Sidebar';
+import ManagerGuard from '@/components/ManagerGuard';
 
-type InventoryItem = {
-  id: string
-  name: string
-  unit_of_measure: string
+interface Product {
+  id: string;
+  name: string;
+  category: string;
+  selling_price: number;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
 }
 
-type BOMItem = {
-  inventory_item_id: string
-  quantity_required: number
-}
+export default function MenuCatalogPage() {
+  const supabase = createClient();
 
-type ProductWithBOM = {
-  id: string
-  name: string
-  selling_price: number
-  bill_of_materials: {
-    quantity_required: number
-    inventory_items: {
-      name: string
-      unit_of_measure: string
-    } | null
-  }[]
-}
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
 
-export default function MenuManager() {
-  const [products, setProducts] = useState<ProductWithBOM[]>([])
-  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
-  const [loading, setLoading] = useState(true)
+  // Product Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [name, setName] = useState('');
+  const [category, setCategory] = useState('Food');
+  const [customCategory, setCustomCategory] = useState('');
+  const [sellingPrice, setSellingPrice] = useState('');
+  const [description, setDescription] = useState('');
+  const [isActive, setIsActive] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Form State for New Product
-  const [isCreating, setIsCreating] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newPrice, setNewPrice] = useState('')
-  
-  // Recipe mapping: array of { inventory_item_id, quantity_required }
-  const [recipeItems, setRecipeItems] = useState<BOMItem[]>([])
-  const [selectedIngredient, setSelectedIngredient] = useState('')
-  const [ingredientQty, setIngredientQty] = useState('')
+  const fetchProducts = useCallback(async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('name');
 
-  const supabase = createClient()
-  const router = useRouter()
-
-  const fetchData = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      router.push('/login')
-      return
+      if (error) throw error;
+      setProducts((data as any) || []);
+    } catch (err: any) {
+      console.error('Error fetching menu items:', err.message);
+    } finally {
+      setLoading(false);
     }
-
-    // Fetch inventory items for recipe building
-    const { data: invData } = await supabase
-      .from('inventory_items')
-      .select('id, name, unit_of_measure')
-      .order('name')
-
-    if (invData) setInventoryItems(invData)
-
-    // Fetch products along with their Bill of Materials and ingredient details
-    const { data: prodData } = await supabase
-      .from('products')
-      .select(`
-        id,
-        name,
-        selling_price,
-        bill_of_materials (
-          quantity_required,
-          inventory_items ( name, unit_of_measure )
-        )
-      `)
-      .order('name')
-
-    if (prodData) setProducts(prodData as unknown as ProductWithBOM[])
-    setLoading(false)
-  }, [router, supabase])
+  }, [supabase]);
 
   useEffect(() => {
-    fetchData()
-  }, [fetchData])
+    fetchProducts();
+  }, [fetchProducts]);
 
-  const addIngredientToRecipe = () => {
-    if (!selectedIngredient || !ingredientQty) return
-    const qty = parseFloat(ingredientQty)
-    if (isNaN(qty) || qty <= 0) return
+  // Unique categories for filter bar
+  const categories = useMemo(() => {
+    const set = new Set(products.map((p) => p.category));
+    return ['ALL', ...Array.from(set)];
+  }, [products]);
 
-    // Prevent duplicate ingredient selection
-    if (recipeItems.some(item => item.inventory_item_id === selectedIngredient)) return
+  const filteredProducts = useMemo(() => {
+    return products.filter((p) => {
+      const matchCat = categoryFilter === 'ALL' || p.category === categoryFilter;
+      const matchSearch =
+        p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (p.description && p.description.toLowerCase().includes(searchQuery.toLowerCase()));
+      return matchCat && matchSearch;
+    });
+  }, [products, categoryFilter, searchQuery]);
 
-    setRecipeItems([...recipeItems, { inventory_item_id: selectedIngredient, quantity_required: qty }])
-    setSelectedIngredient('')
-    setIngredientQty('')
-  }
+  const handleOpenAdd = () => {
+    setEditingProduct(null);
+    setName('');
+    setCategory('Food');
+    setCustomCategory('');
+    setSellingPrice('');
+    setDescription('');
+    setIsActive(true);
+    setErrorMsg(null);
+    setIsModalOpen(true);
+  };
 
-  const removeRecipeItem = (id: string) => {
-    setRecipeItems(recipeItems.filter(item => item.inventory_item_id !== id))
-  }
+  const handleOpenEdit = (product: Product) => {
+    setEditingProduct(product);
+    setName(product.name);
+    const standardCategories = ['Food', 'Beverages', 'Pastries', 'Desserts', 'Merchandise'];
+    if (standardCategories.includes(product.category)) {
+      setCategory(product.category);
+      setCustomCategory('');
+    } else {
+      setCategory('Custom');
+      setCustomCategory(product.category);
+    }
+    setSellingPrice(product.selling_price.toString());
+    setDescription(product.description || '');
+    setIsActive(product.is_active);
+    setErrorMsg(null);
+    setIsModalOpen(true);
+  };
 
-  const handleCreateProduct = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newName || !newPrice) return
-
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('users')
-      .select('tenant_id')
-      .single()
-
-    if (!profile) return
-
-    // 1. Insert Product
-    const { data: productData, error: prodError } = await supabase
-      .from('products')
-      .insert({
-        tenant_id: profile.tenant_id,
-        name: newName,
-        selling_price: parseFloat(newPrice),
-        is_active: true
-      })
-      .select()
-      .single()
-
-    if (prodError || !productData) {
-      console.error("Failed to create product:", prodError)
-      alert("Error creating product.")
-      return
+  const handleSaveProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      setErrorMsg('Product name is required.');
+      return;
     }
 
-    // 2. Insert BOM items if any
-    if (recipeItems.length > 0) {
-      const bomPayload = recipeItems.map(item => ({
-        product_id: productData.id,
-        inventory_item_id: item.inventory_item_id,
-        quantity_required: item.quantity_required
-      }))
+    const price = parseFloat(sellingPrice);
+    if (isNaN(price) || price < 0) {
+      setErrorMsg('Please enter a valid selling price.');
+      return;
+    }
 
-      const { error: bomError } = await supabase
-        .from('bill_of_materials')
-        .insert(bomPayload)
+    const finalCategory = category === 'Custom' ? customCategory.trim() || 'General' : category;
 
-      if (bomError) {
-        console.error("Failed to save product recipe:", bomError)
-        alert("Product created, but recipe mapping failed.")
+    setIsSaving(true);
+    setErrorMsg(null);
+
+    try {
+      if (editingProduct) {
+        // Update product
+        const { error } = await supabase
+          .from('products')
+          .update({
+            name: name.trim(),
+            category: finalCategory,
+            selling_price: price,
+            description: description.trim() || null,
+            is_active: isActive,
+          })
+          .eq('id', editingProduct.id);
+
+        if (error) throw error;
+      } else {
+        // Create new product
+        const { error } = await supabase.from('products').insert({
+          name: name.trim(),
+          category: finalCategory,
+          selling_price: price,
+          description: description.trim() || null,
+          is_active: isActive,
+        });
+
+        if (error) throw error;
       }
+
+      setIsModalOpen(false);
+      fetchProducts();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to save product.');
+    } finally {
+      setIsSaving(false);
     }
+  };
 
-    // Reset Form & Refresh
-    setIsCreating(false)
-    setNewName('')
-    setNewPrice('')
-    setRecipeItems([])
-    fetchData()
-  }
+  const handleToggleStatus = async (product: Product) => {
+    try {
+      const { error } = await supabase
+        .from('products')
+        .update({ is_active: !product.is_active })
+        .eq('id', product.id);
 
-  if (loading) return <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-emerald-400">Loading Menu Manager...</div>
+      if (error) throw error;
+      fetchProducts();
+    } catch (err: any) {
+      alert(`Could not update status: ${err.message}`);
+    }
+  };
 
   return (
-    <div className="flex h-screen bg-zinc-950 font-sans text-white overflow-hidden">
-      <Sidebar />
-      
-      <div className="flex flex-1 flex-col overflow-y-auto p-8 relative">
-        <div className="mx-auto w-full max-w-5xl">
-          <header className="mb-8 flex items-center justify-between border-b border-zinc-800 pb-6">
-            <div>
-              <h1 className="text-3xl font-extrabold tracking-tight">Menu & BOM Manager</h1>
-              <p className="mt-1 text-zinc-400">Create sellable items and map their raw inventory recipes.</p>
-            </div>
-            <button
-              onClick={() => setIsCreating(true)}
-              className="rounded-xl bg-emerald-500 px-5 py-3 font-bold text-zinc-950 shadow-lg transition hover:bg-emerald-400"
-            >
-              + Add New Product
-            </button>
-          </header>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {products.map((product) => (
-              <div key={product.id} className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 shadow-lg flex flex-col justify-between">
-                <div>
-                  <div className="flex justify-between items-start mb-4">
-                    <h3 className="text-xl font-bold text-zinc-100">{product.name}</h3>
-                    <span className="text-lg font-extrabold text-emerald-400">${Number(product.selling_price).toFixed(2)}</span>
-                  </div>
-
-                  <div className="border-t border-zinc-800 pt-4">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400 block mb-2">Recipe (Bill of Materials)</span>
-                    {product.bill_of_materials && product.bill_of_materials.length > 0 ? (
-                      <ul className="space-y-1.5">
-                        {product.bill_of_materials.map((bom, idx) => (
-                          <li key={idx} className="flex justify-between text-xs bg-zinc-950 px-3 py-2 rounded-lg border border-zinc-800/60">
-                            <span className="text-zinc-300 font-medium">{bom.inventory_items?.name}</span>
-                            <span className="text-emerald-400 font-bold">
-                              {bom.quantity_required} {bom.inventory_items?.unit_of_measure}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-xs text-zinc-500 italic">No raw inventory mapped (direct sale item).</p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+    <ManagerGuard
+      pageTitle="Menu & Product Catalog"
+      description="Creating, re-pricing, and managing restaurant menu products requires Manager authorization."
+    >
+      <div className="flex h-screen bg-neutral-950 font-sans text-neutral-100 overflow-hidden">
+        <div className="h-full flex-shrink-0">
+          <Sidebar />
         </div>
 
-        {/* CREATE PRODUCT MODAL */}
-        {isCreating && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 overflow-y-auto">
-            <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl my-8">
-              <h2 className="text-2xl font-bold mb-1">Create New Product</h2>
-              <p className="text-sm text-zinc-400 mb-6">Define your menu item and its ingredient breakdown.</p>
-              
-              <form onSubmit={handleCreateProduct} className="space-y-5">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <main className="flex-1 flex flex-col overflow-y-auto p-8 space-y-6 bg-neutral-950">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-800 pb-5">
+            <div>
+              <h1 className="text-2xl font-black text-white tracking-tight">Menu & Product Catalog</h1>
+              <p className="text-xs text-neutral-400 mt-1">
+                Configure your active POS menu items, categories, pricing, and link ingredient recipes.
+              </p>
+            </div>
+
+            <button
+              onClick={handleOpenAdd}
+              className="bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition cursor-pointer shadow-lg shadow-emerald-950/40"
+            >
+              + Add Menu Product
+            </button>
+          </div>
+
+          {/* Filters Bar */}
+          <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex gap-2 overflow-x-auto">
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setCategoryFilter(cat)}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                    categoryFilter === cat
+                      ? 'bg-neutral-800 text-white shadow'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+
+            <div className="w-full sm:w-72">
+              <input
+                type="text"
+                placeholder="Search dish or beverage..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+          </div>
+
+          {/* Products Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {loading ? (
+              <p className="text-xs text-neutral-500 col-span-full text-center py-12">
+                Loading menu catalog...
+              </p>
+            ) : filteredProducts.length === 0 ? (
+              <p className="text-xs text-neutral-500 col-span-full text-center py-12">
+                No products found. Click "+ Add Menu Product" to add your first item.
+              </p>
+            ) : (
+              filteredProducts.map((product) => (
+                <div
+                  key={product.id}
+                  className={`bg-neutral-900/70 border rounded-2xl p-5 flex flex-col justify-between space-y-4 transition ${
+                    product.is_active
+                      ? 'border-neutral-800/80 hover:border-neutral-700'
+                      : 'border-neutral-900 opacity-60'
+                  }`}
+                >
                   <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Product Name</label>
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded-md">
+                        {product.category}
+                      </span>
+                      <button
+                        onClick={() => handleToggleStatus(product)}
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border cursor-pointer ${
+                          product.is_active
+                            ? 'bg-neutral-800 text-neutral-300 border-neutral-700'
+                            : 'bg-rose-950/40 text-rose-400 border-rose-900/60'
+                        }`}
+                      >
+                        {product.is_active ? 'Active' : 'Hidden'}
+                      </button>
+                    </div>
+
+                    <h3 className="font-bold text-base text-white">{product.name}</h3>
+                    {product.description && (
+                      <p className="text-xs text-neutral-400 mt-1 line-clamp-2">
+                        {product.description}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="pt-3 border-t border-neutral-800/60 flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] text-neutral-500 block">Selling Price</span>
+                      <span className="font-mono text-lg font-black text-emerald-400">
+                        ${Number(product.selling_price).toFixed(2)}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <Link
+                        href="/recipes"
+                        className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold transition"
+                        title="Configure ingredients and recipe BOM"
+                      >
+                        📖 Recipe
+                      </Link>
+                      <button
+                        onClick={() => handleOpenEdit(product)}
+                        className="bg-neutral-800 hover:bg-neutral-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* ADD / EDIT PRODUCT MODAL */}
+          {isModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+              <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+                <div className="flex justify-between items-start border-b border-neutral-800 pb-3">
+                  <div>
+                    <h3 className="text-lg font-bold text-white">
+                      {editingProduct ? 'Edit Menu Product' : 'Add New Menu Product'}
+                    </h3>
+                    <p className="text-xs text-neutral-400">
+                      Product appears immediately on `/pos` and `/kds`.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setIsModalOpen(false)}
+                    className="text-neutral-400 hover:text-white text-sm font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveProduct} className="space-y-3.5 text-xs">
+                  <div>
+                    <label className="block text-neutral-300 font-medium mb-1">Product Name *</label>
                     <input
                       type="text"
                       required
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      placeholder="e.g. Teh Tarik"
-                      className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-white placeholder-zinc-600 focus:border-emerald-500 focus:outline-none"
+                      placeholder="e.g. Spanish Latte, Truffle Fries"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
                     />
                   </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-neutral-300 font-medium mb-1">Category</label>
+                      <select
+                        value={category}
+                        onChange={(e) => setCategory(e.target.value)}
+                        className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
+                      >
+                        <option value="Food">Food (Hot Kitchen)</option>
+                        <option value="Beverages">Beverages (Bar / Barista)</option>
+                        <option value="Pastries">Pastries</option>
+                        <option value="Desserts">Desserts</option>
+                        <option value="Merchandise">Merchandise</option>
+                        <option value="Custom">+ Custom Category</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-neutral-300 font-medium mb-1">
+                        Selling Price ($) *
+                      </label>
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0"
+                        required
+                        placeholder="4.50"
+                        value={sellingPrice}
+                        onChange={(e) => setSellingPrice(e.target.value)}
+                        className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  {category === 'Custom' && (
+                    <div>
+                      <label className="block text-neutral-300 font-medium mb-1">
+                        Custom Category Name
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Kombucha, Daily Specials"
+                        value={customCategory}
+                        onChange={(e) => setCustomCategory(e.target.value)}
+                        className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  )}
+
                   <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Selling Price ($)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      required
-                      value={newPrice}
-                      onChange={(e) => setNewPrice(e.target.value)}
-                      placeholder="2.50"
-                      className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-white placeholder-zinc-600 focus:border-emerald-500 focus:outline-none"
+                    <label className="block text-neutral-300 font-medium mb-1">
+                      Description / Kitchen Prep Notes
+                    </label>
+                    <textarea
+                      rows={2}
+                      placeholder="Optional notes or customer-facing description..."
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
                     />
                   </div>
-                </div>
 
-                {/* Recipe Builder Section */}
-                <div className="border-t border-zinc-800 pt-4">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Bill of Materials (Recipe)</label>
-                  
-                  <div className="flex gap-2 mb-3">
-                    <select
-                      value={selectedIngredient}
-                      onChange={(e) => setSelectedIngredient(e.target.value)}
-                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
-                    >
-                      <option value="">Select Ingredient...</option>
-                      {inventoryItems.map((inv) => (
-                        <option key={inv.id} value={inv.id}>
-                          {inv.name} ({inv.unit_of_measure})
-                        </option>
-                      ))}
-                    </select>
-
+                  <div className="flex items-center gap-2 pt-1">
                     <input
-                      type="number"
-                      step="any"
-                      value={ingredientQty}
-                      onChange={(e) => setIngredientQty(e.target.value)}
-                      placeholder="Qty"
-                      className="w-24 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:border-emerald-500 focus:outline-none"
+                      type="checkbox"
+                      id="isActiveProduct"
+                      checked={isActive}
+                      onChange={(e) => setIsActive(e.target.checked)}
+                      className="w-4 h-4 rounded border-neutral-700 bg-neutral-900 text-emerald-500 cursor-pointer"
                     />
+                    <label htmlFor="isActiveProduct" className="text-xs text-neutral-300 cursor-pointer">
+                      Visible on Active POS Terminal Menu
+                    </label>
+                  </div>
 
+                  {errorMsg && (
+                    <p className="text-xs text-rose-400 bg-rose-950/40 border border-rose-900/60 p-2 rounded-xl">
+                      {errorMsg}
+                    </p>
+                  )}
+
+                  <div className="flex justify-end gap-2 pt-3 border-t border-neutral-800">
                     <button
                       type="button"
-                      onClick={addIngredientToRecipe}
-                      className="rounded-xl bg-zinc-800 px-4 py-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-700 transition"
+                      onClick={() => setIsModalOpen(false)}
+                      className="px-4 py-2 text-neutral-400 hover:text-white bg-neutral-800 rounded-xl cursor-pointer"
                     >
-                      Add
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSaving}
+                      className="px-4 py-2 font-bold text-neutral-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition cursor-pointer"
+                    >
+                      {isSaving ? 'Saving...' : editingProduct ? 'Update Product' : 'Create Product'}
                     </button>
                   </div>
-
-                  {/* Added recipe list */}
-                  {recipeItems.length > 0 ? (
-                    <div className="space-y-2 max-h-40 overflow-y-auto mb-4 bg-zinc-950 p-3 rounded-xl border border-zinc-800">
-                      {recipeItems.map((item) => {
-                        const invObj = inventoryItems.find(i => i.id === item.inventory_item_id)
-                        return (
-                          <div key={item.inventory_item_id} className="flex justify-between items-center text-xs bg-zinc-900 px-3 py-2 rounded-lg border border-zinc-800">
-                            <span>{invObj?.name} - <strong className="text-emerald-400">{item.quantity_required} {invObj?.unit_of_measure}</strong></span>
-                            <button
-                              type="button"
-                              onClick={() => removeRecipeItem(item.inventory_item_id)}
-                              className="text-rose-400 hover:text-rose-300 font-bold px-2"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-zinc-500 italic mb-4">No recipe ingredients added yet for this product.</p>
-                  )}
-                </div>
-
-                <div className="flex space-x-3 pt-4 border-t border-zinc-800">
-                  <button
-                    type="button"
-                    onClick={() => { setIsCreating(false); setRecipeItems([]); setNewName(''); setNewPrice(''); }}
-                    className="flex-1 rounded-xl bg-zinc-800 py-3 font-semibold text-zinc-300 hover:bg-zinc-700 transition"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="flex-1 rounded-xl bg-emerald-500 py-3 font-semibold text-zinc-950 hover:bg-emerald-400 transition"
-                  >
-                    Save Product
-                  </button>
-                </div>
-              </form>
+                </form>
+              </div>
             </div>
-          </div>
-        )}
-
+          )}
+        </main>
       </div>
-    </div>
-  )
+    </ManagerGuard>
+  );
 }
