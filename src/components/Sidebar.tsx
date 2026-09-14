@@ -119,6 +119,14 @@ const NAV_ITEMS: NavItem[] = [
     managerOnly: true,
     section: 'MANAGEMENT',
   },
+  {
+    name: 'Starter Kits (Reset)',
+    href: '/settings/starter-kits',
+    icon: '⚡',
+    badge: 'Seed',
+    managerOnly: true,
+    section: 'MANAGEMENT',
+  },
 ];
 
 export default function Sidebar() {
