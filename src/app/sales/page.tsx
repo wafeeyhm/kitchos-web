@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
+import { logAuditEvent } from '@/utils/audit';
 
 interface SaleItem {
   id: string;
@@ -17,6 +18,7 @@ interface SaleItem {
 interface Sale {
   id: string;
   created_at: string;
+  branch_id?: string | null;
   total_amount: number;
   payment_method: string;
   amount_tendered: number;
@@ -78,6 +80,7 @@ export default function SalesPage() {
         .select(`
           id,
           created_at,
+          branch_id,
           total_amount,
           payment_method,
           amount_tendered,
@@ -129,18 +132,15 @@ export default function SalesPage() {
     };
   }, [fetchSales, supabase]);
 
-  // Filtered Sales with Date, Status, Payment Channel, and Txn Ref ID
+  // Filtered Sales with Date, Status, Payment Channel, and Search Query
   const filteredSales = useMemo(() => {
     return sales.filter((sale) => {
-      // 1. Status filter
       if (statusFilter !== 'ALL' && sale.status !== statusFilter) return false;
 
-      // 2. Payment method filter
       if (paymentFilter !== 'ALL' && sale.payment_method.toUpperCase() !== paymentFilter) {
         return false;
       }
 
-      // 3. Date Presets & Custom Range
       const saleDate = new Date(sale.created_at);
       const now = new Date();
 
@@ -152,7 +152,7 @@ export default function SalesPage() {
         const endOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, -1);
         if (saleDate < startOfYesterday || saleDate > endOfYesterday) return false;
       } else if (datePreset === 'THIS_WEEK') {
-        const dayOfWeek = now.getDay(); // 0 is Sunday
+        const dayOfWeek = now.getDay();
         const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
         if (saleDate < startOfWeek) return false;
       } else if (datePreset === 'THIS_MONTH') {
@@ -169,7 +169,6 @@ export default function SalesPage() {
         }
       }
 
-      // 4. Search Filter (Txn ID, Order ID, Cashier Name, Bank, Provider)
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().replace('#', '');
         const idMatch = sale.id.toLowerCase().includes(q);
@@ -190,7 +189,7 @@ export default function SalesPage() {
     });
   }, [sales, datePreset, customStartDate, customEndDate, statusFilter, paymentFilter, searchQuery]);
 
-  // Metrics calculated based on the active filtered set
+  // Metrics
   const metrics = useMemo(() => {
     const activeSales = filteredSales.filter((s) => s.status === 'COMPLETED');
     const voidedSales = filteredSales.filter((s) => s.status === 'VOIDED');
@@ -207,7 +206,7 @@ export default function SalesPage() {
     };
   }, [filteredSales]);
 
-  // Void Handler with Manager PIN
+  // Void Handler with Manager PIN and Audit Trigger
   const handleConfirmVoid = async () => {
     if (!saleToVoid) return;
     if (voidPin.length !== 4) {
@@ -232,13 +231,33 @@ export default function SalesPage() {
       }
 
       // 2. Execute Void RPC
+      const managerAuthNote = `${voidReason} (Auth by ${pinRes.manager_name || 'Manager'})`;
       const { data: voidRes, error: rpcErr } = await supabase.rpc('void_sale_transaction', {
         p_sale_id: saleToVoid.id,
-        p_reason: `${voidReason} (Auth by ${pinRes.manager_name || 'Manager'})`,
+        p_reason: managerAuthNote,
       });
 
       if (rpcErr) throw rpcErr;
       if (!voidRes.success) throw new Error(voidRes.message);
+
+      // 3. Automatically record to Unified System Audit Log
+      await logAuditEvent({
+        branchId: saleToVoid.branch_id || null,
+        actionType: 'VOID_SALE',
+        severity: 'CRITICAL',
+        entityName: 'sales',
+        entityId: saleToVoid.id,
+        summary: `Transaction #${saleToVoid.id.slice(0, 8)} ($${Number(saleToVoid.total_amount).toFixed(2)}) was VOIDED`,
+        details: {
+          order_id: saleToVoid.id,
+          amount: saleToVoid.total_amount,
+          reason: voidReason,
+          authorized_by: pinRes.manager_name || 'Manager',
+          payment_method: saleToVoid.payment_method,
+          order_type: saleToVoid.order_type,
+          reference_number: saleToVoid.reference_number,
+        },
+      });
 
       setIsVoidModalOpen(false);
       setSaleToVoid(null);
@@ -275,7 +294,7 @@ export default function SalesPage() {
           </button>
         </div>
 
-        {/* 4 Metrics Cards (Updates dynamically with Date Filter) */}
+        {/* 4 Metrics Cards */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-5 flex flex-col justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 mb-1">
@@ -348,7 +367,6 @@ export default function SalesPage() {
               ))}
             </div>
 
-            {/* Custom Range Date Pickers (Shown when CUSTOM is selected) */}
             {datePreset === 'CUSTOM' && (
               <div className="flex items-center gap-2 text-xs bg-neutral-950 border border-neutral-800 p-1.5 rounded-xl">
                 <div className="flex items-center gap-1.5">
@@ -652,7 +670,6 @@ export default function SalesPage() {
                     </span>
                   </div>
 
-                  {/* PROMINENT TRANSACTION IDENTIFIER */}
                   {selectedSale.reference_number ? (
                     <div className="flex justify-between text-emerald-400 print:text-black font-bold pt-0.5 pb-0.5">
                       <span>Txn / Approval ID:</span>
@@ -701,7 +718,7 @@ export default function SalesPage() {
           </div>
         )}
 
-        {/* MODAL: VOID SALE TRANSACTION (Requires Manager PIN) */}
+        {/* MODAL: VOID SALE TRANSACTION */}
         {isVoidModalOpen && saleToVoid && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
             <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">

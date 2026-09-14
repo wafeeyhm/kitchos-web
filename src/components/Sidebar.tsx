@@ -42,6 +42,12 @@ const NAV_ITEMS: NavItem[] = [
     icon: '🏢',
   },
   {
+    name: 'Audit Ledger',
+    href: '/audit',
+    icon: '🛡️',
+    badge: 'Sec',
+  },
+  {
     name: 'Menu & Catalog',
     href: '/menu',
     icon: '📋',
@@ -158,7 +164,9 @@ export default function Sidebar() {
                 {item.badge ? (
                   <span
                     className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${
-                      isActive
+                      item.badge === 'Sec'
+                        ? 'bg-rose-950/60 text-rose-400 border-rose-800/60'
+                        : isActive
                         ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800/60'
                         : 'bg-neutral-900 text-neutral-500 border-neutral-800'
                     }`}

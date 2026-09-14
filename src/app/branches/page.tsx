@@ -5,6 +5,7 @@ import { createClient } from '@/utils/supabase/client';
 import Sidebar from '@/components/Sidebar';
 import ManagerGuard from '@/components/ManagerGuard';
 import { useBranch, Branch } from '@/context/BranchContext';
+import { logAuditEvent } from '@/utils/audit';
 
 interface Product {
   id: string;
@@ -137,6 +138,23 @@ export default function BranchesPage() {
           .eq('id', editingBranch.id);
 
         if (error) throw error;
+
+        // Log audit event for branch edit
+        await logAuditEvent({
+          branchId: editingBranch.id,
+          actionType: 'BRANCH_UPDATE',
+          severity: 'WARN',
+          entityName: 'branches',
+          entityId: editingBranch.id,
+          summary: `Branch profile updated for ${branchCode.trim().toUpperCase()}`,
+          details: {
+            branch_id: editingBranch.id,
+            name: branchName.trim(),
+            code: branchCode.trim().toUpperCase(),
+            phone: branchPhone.trim(),
+            address: branchAddress.trim(),
+          },
+        });
       } else {
         const { data: newB, error } = await supabase
           .from('branches')
@@ -161,6 +179,21 @@ export default function BranchesPage() {
           }));
           await supabase.from('branch_products').insert(links);
         }
+
+        // Log audit event for branch creation
+        await logAuditEvent({
+          branchId: newB.id,
+          actionType: 'BRANCH_UPDATE',
+          severity: 'WARN',
+          entityName: 'branches',
+          entityId: newB.id,
+          summary: `New branch outlet created: ${newB.name} (${newB.code})`,
+          details: {
+            branch_id: newB.id,
+            name: newB.name,
+            code: newB.code,
+          },
+        });
       }
 
       await refreshBranches();
@@ -207,6 +240,25 @@ export default function BranchesPage() {
       );
 
       if (error) throw error;
+
+      // Log audit event for menu availability change
+      const targetProd = products.find((p) => p.id === productId);
+      await logAuditEvent({
+        branchId: selectedBranch.id,
+        actionType: 'MENU_UPDATE',
+        severity: 'INFO',
+        entityName: 'branch_products',
+        entityId: productId,
+        summary: `Menu item "${targetProd?.name || productId.slice(0, 8)}" set to ${
+          !currentAvailability ? 'AVAILABLE' : 'DISABLED'
+        } at ${selectedBranch.code}`,
+        details: {
+          branch_code: selectedBranch.code,
+          product_id: productId,
+          product_name: targetProd?.name,
+          is_available: !currentAvailability,
+        },
+      });
     } catch (err: any) {
       console.error('Error updating availability:', err);
       fetchBranchMenu();
@@ -230,6 +282,27 @@ export default function BranchesPage() {
       );
 
       if (error) throw error;
+
+      // Log audit event for price override
+      const targetProd = products.find((p) => p.id === productId);
+      await logAuditEvent({
+        branchId: selectedBranch.id,
+        actionType: 'PRICE_OVERRIDE',
+        severity: 'WARN',
+        entityName: 'branch_products',
+        entityId: productId,
+        summary: `Price override set to $${priceVal ?? 'Standard Base'} for "${
+          targetProd?.name || productId.slice(0, 8)
+        }" at ${selectedBranch.code}`,
+        details: {
+          branch_code: selectedBranch.code,
+          product_id: productId,
+          product_name: targetProd?.name,
+          standard_price: targetProd?.selling_price,
+          new_price_override: priceVal,
+        },
+      });
+
       fetchBranchMenu();
     } catch (err: any) {
       alert(`Could not save price override: ${err.message}`);
