@@ -1,286 +1,169 @@
-'use client'
+'use client';
 
-import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
-import { createClient } from '@/utils/supabase/client'
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { createClient } from '@/utils/supabase/client';
 
 export default function LoginPage() {
-  const [mounted, setMounted] = useState(false)
-  const [authMode, setAuthMode] = useState<'password' | 'otp'>('password')
-  
-  // Password flow state
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  
-  // OTP flow state
-  const [otpSent, setOtpSent] = useState(false)
-  const [otpToken, setOtpToken] = useState('')
-  
-  const [loading, setLoading] = useState(false)
-  const [errorMsg, setErrorMsg] = useState('')
-  const [successMsg, setSuccessMsg] = useState('')
+  const router = useRouter();
+  const supabase = createClient();
 
-  const router = useRouter()
-  const supabase = createClient()
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [rememberTerminal, setRememberTerminal] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Check if session already exists
   useEffect(() => {
-    setMounted(true)
-  }, [])
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        router.replace('/pos');
+      }
+    });
+  }, [supabase, router]);
 
-  const redirectByRole = async (userId: string) => {
-    const { data: profile } = await supabase
-      .from('users')
-      .select('role')
-      .eq('id', userId)
-      .single()
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMsg(null);
 
-    if (profile?.role === 'cashier') {
-      router.push('/pos')
-    } else {
-      router.push('/')
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: password.trim(),
+      });
+
+      if (error) throw error;
+
+      if (data.session) {
+        // Ensure default staff member is assigned in localStorage if not set
+        const { data: defaultStaff } = await supabase
+          .from('staff_members')
+          .select('id, name, role')
+          .limit(1)
+          .maybeSingle();
+
+        if (defaultStaff) {
+          localStorage.setItem('kitchos_active_staff', JSON.stringify(defaultStaff));
+        }
+
+        router.replace('/pos');
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Authentication failed. Please verify your credentials.');
+    } finally {
+      setLoading(false);
     }
-    router.refresh()
-  }
+  };
 
-  const handlePasswordLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setErrorMsg('')
+  // Quick-fill for development / local demo testing
+  const handleQuickBypassDev = async () => {
+    setLoading(true);
+    try {
+      // Pick first staff member and jump straight into POS
+      const { data: staff } = await supabase
+        .from('staff_members')
+        .select('id, name, role')
+        .limit(1)
+        .maybeSingle();
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
-
-    if (error) {
-      setErrorMsg(error.message)
-      setLoading(false)
-      return
+      if (staff) {
+        localStorage.setItem('kitchos_active_staff', JSON.stringify(staff));
+      }
+      router.replace('/pos');
+    } catch (e: any) {
+      router.replace('/pos');
+    } finally {
+      setLoading(false);
     }
-
-    if (data.user) {
-      await redirectByRole(data.user.id)
-    }
-  }
-
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setErrorMsg('')
-    setSuccessMsg('')
-
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-    })
-
-    if (error) {
-      setErrorMsg(error.message)
-    } else {
-      setOtpSent(true)
-      setSuccessMsg(`An 8-digit code has been sent to ${email}`)
-    }
-    setLoading(false)
-  }
-
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setErrorMsg('')
-
-    const { data, error } = await supabase.auth.verifyOtp({
-      email,
-      token: otpToken.trim(),
-      type: 'email',
-    })
-
-    if (error) {
-      setErrorMsg(error.message)
-      setLoading(false)
-      return
-    }
-
-    if (data.user) {
-      await redirectByRole(data.user.id)
-    }
-  }
-
-  const switchTab = (mode: 'password' | 'otp') => {
-    setAuthMode(mode)
-    setErrorMsg('')
-    setSuccessMsg('')
-    setOtpSent(false)
-    setOtpToken('')
-  }
-
-  if (!mounted) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 font-sans text-zinc-500">
-        Loading...
-      </div>
-    )
-  }
+  };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4 font-sans text-white" suppressHydrationWarning>
-      <div className="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900 p-8 shadow-2xl">
-        <div className="mb-6 text-center">
-          <h1 className="text-2xl font-extrabold tracking-tight">KitchOS</h1>
-          <p className="mt-1 text-xs text-zinc-400">Select your preferred sign-in method</p>
+    <div className="min-h-screen w-screen bg-neutral-950 flex flex-col justify-center items-center p-4 font-sans text-neutral-100 select-none">
+      <div className="w-full max-w-md bg-neutral-900/80 border border-neutral-800 rounded-3xl p-8 shadow-2xl backdrop-blur-sm space-y-6">
+        {/* Brand Header */}
+        <div className="text-center space-y-2">
+          <div className="inline-flex w-12 h-12 rounded-2xl bg-emerald-500 items-center justify-center font-black text-neutral-950 text-xl shadow-lg shadow-emerald-950/50">
+            K
+          </div>
+          <h1 className="text-2xl font-black text-white tracking-tight">KitchOS Terminal</h1>
+          <p className="text-xs text-neutral-400">
+            Sign in with your Organization Account to authorize this device
+          </p>
         </div>
 
-        {/* Mode Switcher */}
-        <div className="mb-6 grid grid-cols-2 gap-1 rounded-xl bg-zinc-950 p-1 border border-zinc-800">
+        {/* Login Form */}
+        <form onSubmit={handleLogin} className="space-y-4 text-xs">
+          <div>
+            <label className="block text-neutral-300 font-medium mb-1.5">Account Email</label>
+            <input
+              type="email"
+              required
+              autoFocus
+              placeholder="owner@restaurant.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-2.5 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-1.5">
+              <label className="block text-neutral-300 font-medium">Password</label>
+            </div>
+            <input
+              type="password"
+              required
+              placeholder="••••••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-2.5 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition"
+            />
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <label className="flex items-center gap-2 cursor-pointer text-neutral-400 hover:text-neutral-200">
+              <input
+                type="checkbox"
+                checked={rememberTerminal}
+                onChange={(e) => setRememberTerminal(e.target.checked)}
+                className="w-4 h-4 rounded border-neutral-700 bg-neutral-950 text-emerald-500 cursor-pointer"
+              />
+              <span>Keep register signed in</span>
+            </label>
+          </div>
+
+          {errorMsg && (
+            <div className="p-3 bg-rose-950/50 border border-rose-900/80 rounded-xl text-rose-300 text-xs">
+              {errorMsg}
+            </div>
+          )}
+
           <button
-            type="button"
-            onClick={() => switchTab('password')}
-            className={`cursor-pointer rounded-lg py-2 text-xs font-semibold transition ${
-              authMode === 'password'
-                ? 'bg-zinc-800 text-emerald-400 shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 rounded-xl font-bold text-xs bg-emerald-500 hover:bg-emerald-400 text-neutral-950 transition cursor-pointer shadow-lg shadow-emerald-950/40 disabled:opacity-40"
           >
-            Password
+            {loading ? 'Authenticating Station...' : 'Sign In to Terminal'}
           </button>
+        </form>
+
+        {/* Development / Standalone Demo Bypass */}
+        <div className="pt-4 border-t border-neutral-800/80 text-center">
           <button
             type="button"
-            onClick={() => switchTab('otp')}
-            className={`cursor-pointer rounded-lg py-2 text-xs font-semibold transition ${
-              authMode === 'otp'
-                ? 'bg-zinc-800 text-emerald-400 shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
+            onClick={handleQuickBypassDev}
+            className="text-[11px] text-neutral-500 hover:text-emerald-400 transition cursor-pointer"
           >
-            Passwordless
+            ⚡ Local Demo / Terminal Bypass (Proceed to POS)
           </button>
         </div>
-
-        {errorMsg && (
-          <div className="mb-4 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-xs text-rose-400">
-            {errorMsg}
-          </div>
-        )}
-
-        {successMsg && (
-          <div className="mb-4 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs text-emerald-400">
-            {successMsg}
-          </div>
-        )}
-
-        {/* Tab 1: Password */}
-        {authMode === 'password' && (
-          <form onSubmit={handlePasswordLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
-                Staff Email
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="cashier@kitchos.com"
-                className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-white placeholder-zinc-600 focus:border-emerald-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
-                Password
-              </label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-white placeholder-zinc-600 focus:border-emerald-500 focus:outline-none"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full cursor-pointer rounded-xl bg-emerald-500 py-3 text-sm font-bold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-50 mt-2"
-            >
-              {loading ? 'Authenticating...' : 'Sign In with Password'}
-            </button>
-          </form>
-        )}
-
-        {/* Tab 2: Passwordless OTP Verification */}
-        {authMode === 'otp' && (
-          <>
-            {!otpSent ? (
-              <form onSubmit={handleSendOtp} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
-                    Account Email
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="owner@example.com"
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-white placeholder-zinc-600 focus:border-emerald-500 focus:outline-none"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full cursor-pointer rounded-xl bg-emerald-500 py-3 text-sm font-bold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-50 mt-2"
-                >
-                  {loading ? 'Sending code...' : 'Send OTP Code'}
-                </button>
-              </form>
-            ) : (
-              <form onSubmit={handleVerifyOtp} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
-                    Enter 8-Digit Code
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={8}
-                    pattern="[0-9]{8}"
-                    inputMode="numeric"
-                    autoFocus
-                    value={otpToken}
-                    onChange={(e) => setOtpToken(e.target.value)}
-                    placeholder="12345678"
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-center font-mono text-lg tracking-widest text-white placeholder-zinc-600 focus:border-emerald-500 focus:outline-none"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading || otpToken.trim().length !== 8}
-                  className="w-full cursor-pointer rounded-xl bg-emerald-500 py-3 text-sm font-bold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-50 mt-2"
-                >
-                  {loading ? 'Verifying...' : 'Verify & Log In'}
-                </button>
-
-                <div className="text-center pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setOtpSent(false)
-                      setOtpToken('')
-                      setErrorMsg('')
-                      setSuccessMsg('')
-                    }}
-                    className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-300 transition underline"
-                  >
-                    Change email or resend code
-                  </button>
-                </div>
-              </form>
-            )}
-          </>
-        )}
       </div>
+
+      <footer className="mt-8 text-center text-[10px] text-neutral-600 font-mono">
+        KitchOS v3.1 Enterprise POS • Multi-Tenant Session Engine
+      </footer>
     </div>
-  )
+  );
 }

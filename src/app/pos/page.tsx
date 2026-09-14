@@ -166,7 +166,7 @@ export default function PosPage() {
     return cart.reduce((sum, item) => sum + item.quantity, 0);
   }, [cart]);
 
-  // CFD Live Sync: Push order changes to secondary customer display
+  // CFD Live Sync
   useEffect(() => {
     broadcastToCfd(supabase, 'CART_UPDATE', {
       items: cart,
@@ -178,8 +178,18 @@ export default function PosPage() {
     });
   }, [cart, cartSubtotal, orderType, isRush, activeStaff.name, currentBranch?.name, supabase]);
 
-  // 1. Initialize Active Staff
+  // 1. Initialize Active Staff & Check Lock State
   useEffect(() => {
+    // Read lock state from storage
+    if (localStorage.getItem('kitchos_terminal_locked') === 'true') {
+      setIsTerminalLocked(true);
+    }
+
+    // Listen for live lock events dispatched from Sidebar
+    const handleLockEvent = () => setIsTerminalLocked(true);
+    window.addEventListener('kitchos_lock_terminal', handleLockEvent);
+
+    // Read stored staff
     const saved = localStorage.getItem('kitchos_active_staff');
     if (saved) {
       try {
@@ -199,6 +209,10 @@ export default function PosPage() {
           }
         });
     }
+
+    return () => {
+      window.removeEventListener('kitchos_lock_terminal', handleLockEvent);
+    };
   }, [supabase]);
 
   // 2. Load Products with Branch Availability & Price Overrides
@@ -312,22 +326,28 @@ export default function PosPage() {
     fetchPaymentMethods();
   }, [fetchProducts, fetchActiveShift, fetchPaymentMethods]);
 
-  // Keypad Authentication for Cashier Switching and Station Unlocking
-  const handleAuthenticatePin = async (pinToTest: string, unlockOnly = false) => {
+  // Keypad Authentication: Always switches to the authenticated staff member
+  const handleAuthenticatePin = async (pinToTest: string) => {
     setIsVerifyingPin(true);
     setPinError(null);
+
     try {
       const { data, error } = await supabase.rpc('authenticate_staff_pin', {
-        p_pin: pinToTest,
+        p_pin: pinToTest.trim(),
       });
 
       if (error) throw error;
       const staff = data && data[0];
+
       if (staff) {
-        if (!unlockOnly) {
-          setActiveStaff(staff);
-          localStorage.setItem('kitchos_active_staff', JSON.stringify(staff));
-        }
+        // Switch active staff to whoever entered their PIN (Alex 1234 or Manager 9999)
+        setActiveStaff(staff);
+        localStorage.setItem('kitchos_active_staff', JSON.stringify(staff));
+        localStorage.removeItem('kitchos_terminal_locked');
+
+        // Alert the sidebar to update immediately
+        window.dispatchEvent(new Event('kitchos_staff_changed'));
+
         setIsTerminalLocked(false);
         setIsSwitchStaffOpen(false);
         setPinInput('');
@@ -343,12 +363,12 @@ export default function PosPage() {
     }
   };
 
-  const handleKeypadPress = (digit: string, isUnlockScreen: boolean) => {
+  const handleKeypadPress = (digit: string) => {
     if (isVerifyingPin || pinInput.length >= 4) return;
     const next = pinInput + digit;
     setPinInput(next);
     if (next.length === 4) {
-      handleAuthenticatePin(next, isUnlockScreen);
+      handleAuthenticatePin(next);
     }
   };
 
@@ -476,7 +496,7 @@ export default function PosPage() {
 
   const activeMethodObj = paymentMethods.find((m) => m.code === selectedMethodCode);
 
-  // Open Checkout Modal & Broadcast to Customer Facing Display
+  // Open Checkout Modal
   const handleOpenCheckout = () => {
     setAmountTendered(cartSubtotal.toFixed(2));
     setTransactionRef('');
@@ -500,7 +520,7 @@ export default function PosPage() {
     });
   };
 
-  // Select Payment Channel & Sync with Customer Screen
+  // Select Payment Channel
   const handleSelectPaymentMethod = (code: string) => {
     setSelectedMethodCode(code);
     setTransactionRef('');
@@ -519,7 +539,7 @@ export default function PosPage() {
     });
   };
 
-  // Select QR Provider & Sync with Customer Screen
+  // Select QR Provider
   const handleSelectQrProvider = (provider: QrProvider) => {
     setSelectedQrProvider(provider);
 
@@ -576,7 +596,7 @@ export default function PosPage() {
         paymentDetails.reference_id = finalRef;
       }
 
-      // 1. Insert Sales Header (with branch_id, is_rush, and kds_status)
+      // 1. Insert Sales Header
       const { data: saleData, error: saleErr } = await supabase
         .from('sales')
         .insert({
@@ -599,7 +619,7 @@ export default function PosPage() {
 
       if (saleErr) throw saleErr;
 
-      // 2. Insert Items with Modifiers
+      // 2. Insert Items
       const lineItemsToInsert = cart.map((item) => ({
         sale_id: saleData.id,
         product_id: item.product.id,
@@ -614,7 +634,7 @@ export default function PosPage() {
       const { error: itemsErr } = await supabase.from('sale_items').insert(lineItemsToInsert);
       if (itemsErr) throw itemsErr;
 
-      // 3. Broadcast Completion to Customer Facing Display
+      // 3. Broadcast Completion to CFD
       broadcastToCfd(supabase, 'SALE_COMPLETED', {
         completedSale: {
           id: saleData.id,
@@ -672,7 +692,6 @@ export default function PosPage() {
                 <p className="text-[11px] text-neutral-400">Direct order entry & modifier controls</p>
               </div>
 
-              {/* Active Branch Pill */}
               {currentBranch && (
                 <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-full">
                   <span>📍</span>
@@ -708,6 +727,7 @@ export default function PosPage() {
                   onClick={() => {
                     setPinInput('');
                     setPinError(null);
+                    localStorage.setItem('kitchos_terminal_locked', 'true');
                     setIsTerminalLocked(true);
                   }}
                   className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded-lg transition cursor-pointer"
@@ -965,7 +985,6 @@ export default function PosPage() {
                     </span>
                   </div>
 
-                  {/* Modifiers List */}
                   {(item.modifiers.length > 0 || item.notes) && (
                     <div className="pt-1.5 border-t border-neutral-800/60 text-[10px] space-y-0.5 font-mono">
                       {item.modifiers.map((m, idx) => (
@@ -1131,7 +1150,6 @@ export default function PosPage() {
               </button>
             </div>
 
-            {/* Dynamic Tender Options */}
             <div className="grid grid-cols-4 gap-2">
               {paymentMethods.map((m) => (
                 <button
@@ -1155,7 +1173,6 @@ export default function PosPage() {
               ))}
             </div>
 
-            {/* 1. CASH BODY */}
             {selectedMethodCode === 'CASH' && (
               <div className="space-y-3.5">
                 <div>
@@ -1200,7 +1217,6 @@ export default function PosPage() {
               </div>
             )}
 
-            {/* 2. CARD BODY + APPROVAL CODE */}
             {selectedMethodCode === 'CARD' && (
               <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3.5">
                 <div className="flex justify-between items-center text-xs">
@@ -1256,7 +1272,6 @@ export default function PosPage() {
               </div>
             )}
 
-            {/* 3. MULTI-PROVIDER BRUNEI QR BODY */}
             {selectedMethodCode === 'QR' && (
               <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3.5">
                 <div>
@@ -1325,7 +1340,6 @@ export default function PosPage() {
               </div>
             )}
 
-            {/* 4. BANK TRANSFER BODY */}
             {selectedMethodCode === 'TRANSFER' && (
               <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-2xl space-y-3.5">
                 <span className="text-[10px] font-bold text-neutral-400 uppercase block">
@@ -1466,7 +1480,6 @@ export default function PosPage() {
                 </p>
               </div>
 
-              {/* Items with modifiers */}
               <div className="space-y-1.5 py-1 border-b border-dashed border-neutral-800">
                 {lastSale.items.map((item, idx) => (
                   <div key={idx} className="text-[11px]">
@@ -1590,7 +1603,7 @@ export default function PosPage() {
                   key={digit}
                   type="button"
                   disabled={isVerifyingPin}
-                  onClick={() => handleKeypadPress(digit, false)}
+                  onClick={() => handleKeypadPress(digit)}
                   className="h-12 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-lg font-bold text-white transition cursor-pointer"
                 >
                   {digit}
@@ -1608,7 +1621,7 @@ export default function PosPage() {
               <button
                 type="button"
                 disabled={isVerifyingPin}
-                onClick={() => handleKeypadPress('0', false)}
+                onClick={() => handleKeypadPress('0')}
                 className="h-12 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-lg font-bold text-white transition cursor-pointer"
               >
                 0
@@ -1636,7 +1649,7 @@ export default function PosPage() {
               </div>
               <h3 className="text-lg font-black text-white">Station Locked</h3>
               <p className="text-xs text-neutral-400">
-                Enter PIN to unlock terminal ({activeStaff.name})
+                Enter your 4-digit PIN to unlock
               </p>
             </div>
 
@@ -1665,7 +1678,7 @@ export default function PosPage() {
                   key={digit}
                   type="button"
                   disabled={isVerifyingPin}
-                  onClick={() => handleKeypadPress(digit, true)}
+                  onClick={() => handleKeypadPress(digit)}
                   className="h-13 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-xl font-bold text-white transition cursor-pointer"
                 >
                   {digit}
@@ -1677,7 +1690,7 @@ export default function PosPage() {
               <button
                 type="button"
                 disabled={isVerifyingPin}
-                onClick={() => handleKeypadPress('0', true)}
+                onClick={() => handleKeypadPress('0')}
                 className="h-13 rounded-2xl bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 active:scale-95 font-mono text-xl font-bold text-white transition cursor-pointer"
               >
                 0
