@@ -24,109 +24,24 @@ interface StaffMember {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // FRONT OF HOUSE / OPERATIONS (Visible to Everyone)
-  {
-    name: 'POS Terminal',
-    href: '/pos',
-    icon: '🖥️',
-    section: 'OPERATIONS',
-  },
-  {
-    name: 'Kitchen (KDS)',
-    href: '/kds',
-    icon: '🍳',
-    badge: 'Live',
-    section: 'OPERATIONS',
-  },
-  {
-    name: 'Customer Display',
-    href: '/display',
-    icon: '🪞',
-    isExternalWindow: true,
-    badge: 'CFD',
-    section: 'OPERATIONS',
-  },
+  // FRONT OF HOUSE (Visible to Everyone)
+  { name: 'POS Terminal', href: '/pos', icon: '🖥️', section: 'OPERATIONS' },
+  { name: 'Kitchen (KDS)', href: '/kds', icon: '🍳', badge: 'Live', section: 'OPERATIONS' },
+  { name: 'Customer Display', href: '/display', icon: '🪞', isExternalWindow: true, badge: 'CFD', section: 'OPERATIONS' },
 
-  // BACK OF HOUSE / MANAGEMENT (Manager & Owner Only)
-  {
-    name: 'Dashboard',
-    href: '/',
-    icon: '📊',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Branch Outlets',
-    href: '/branches',
-    icon: '🏢',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Audit Ledger',
-    href: '/audit',
-    icon: '🛡️',
-    badge: 'Sec',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Menu & Catalog',
-    href: '/menu',
-    icon: '📋',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Sales & Orders',
-    href: '/sales',
-    icon: '🧾',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Purchases & Vendors',
-    href: '/purchases',
-    icon: '🚚',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Recipes & COGS',
-    href: '/recipes',
-    icon: '📖',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Inventory & Waste',
-    href: '/inventory',
-    icon: '📦',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Staff Directory',
-    href: '/staff',
-    icon: '👥',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Payment Channels',
-    href: '/payments',
-    icon: '💳',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
-  {
-    name: 'Starter Kits (Reset)',
-    href: '/settings/starter-kits',
-    icon: '⚡',
-    badge: 'Seed',
-    managerOnly: true,
-    section: 'MANAGEMENT',
-  },
+  // STORE MANAGEMENT (Manager & Owner Only)
+  { name: 'Dashboard', href: '/', icon: '📊', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Branch Outlets', href: '/branches', icon: '🏢', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Audit Ledger', href: '/audit', icon: '🛡️', badge: 'Sec', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Menu & Catalog', href: '/menu', icon: '📋', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Sales & Orders', href: '/sales', icon: '🧾', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Purchases & Vendors', href: '/purchases', icon: '🚚', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Recipes & COGS', href: '/recipes', icon: '📖', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Inventory & Waste', href: '/inventory', icon: '📦', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Staff Directory', href: '/staff', icon: '👥', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Payment Channels', href: '/payments', icon: '💳', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Starter Kits (Reset)', href: '/settings/starter-kits', icon: '⚡', badge: 'Seed', managerOnly: true, section: 'MANAGEMENT' },
+  { name: 'Brand Theme', href: '/settings/theme', icon: '🎨', managerOnly: true, section: 'MANAGEMENT' },
 ];
 
 export default function Sidebar() {
@@ -135,14 +50,12 @@ export default function Sidebar() {
   const supabase = createClient();
   const { branches, currentBranch, setCurrentBranch } = useBranch();
 
-  // Active Staff & Sign-out Modal State
   const [activeStaff, setActiveStaff] = useState<StaffMember | null>(null);
   const [isSignoutModalOpen, setIsSignoutModalOpen] = useState(false);
   const [managerPin, setManagerPin] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
 
-  // Helper to read and update staff from localStorage
   const syncActiveStaff = () => {
     const saved = localStorage.getItem('kitchos_active_staff');
     if (saved) {
@@ -177,14 +90,12 @@ export default function Sidebar() {
     };
   }, [supabase]);
 
-  // Check if current user is Manager / Owner / Admin
   const isManager = useMemo(() => {
     if (!activeStaff) return false;
     const roleUpper = (activeStaff.role || '').toUpperCase();
     return ['MANAGER', 'OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(roleUpper);
   }, [activeStaff]);
 
-  // Filter navigation items based on active role
   const visibleNavItems = useMemo(() => {
     return NAV_ITEMS.filter((item) => {
       if (item.managerOnly && !isManager) return false;
@@ -192,7 +103,6 @@ export default function Sidebar() {
     });
   }, [isManager]);
 
-  // Group items by section
   const operationsItems = useMemo(
     () => visibleNavItems.filter((item) => item.section === 'OPERATIONS'),
     [visibleNavItems]
@@ -203,23 +113,19 @@ export default function Sidebar() {
     [visibleNavItems]
   );
 
-  // Pop-out Customer Display Window
   const handleOpenCfdWindow = (e: React.MouseEvent, href: string) => {
     e.preventDefault();
     window.open(href, 'KitchOS_CFD', 'width=1024,height=768,menubar=no,toolbar=no,location=no');
   };
 
-  // Instant Station Lock (Triggers PIN keypad)
   const handleQuickLock = () => {
     localStorage.setItem('kitchos_terminal_locked', 'true');
     window.dispatchEvent(new Event('kitchos_lock_terminal'));
-
     if (pathname !== '/pos') {
       router.push('/pos');
     }
   };
 
-  // Manager-Guarded Full Account Sign-Out
   const handleConfirmSignOut = async (e: React.FormEvent) => {
     e.preventDefault();
     if (managerPin.length !== 4) {
@@ -237,7 +143,7 @@ export default function Sidebar() {
 
       if (pinErr) throw pinErr;
       if (!pinRes || !pinRes.valid) {
-        setPinError('Invalid Manager PIN. Sign-out authorized by Manager only.');
+        setPinError('Invalid Manager PIN.');
         setIsSigningOut(false);
         return;
       }
@@ -262,8 +168,7 @@ export default function Sidebar() {
             key={item.href}
             href={item.href}
             onClick={(e) => handleOpenCfdWindow(e, item.href)}
-            className="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/60"
-            title="Launch Customer Display in secondary window"
+            className="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group text-theme-secondary hover:text-theme-primary hover:bg-surface-elevated"
           >
             <div className="flex items-center gap-3">
               <span className="text-base group-hover:scale-110 transition-transform">
@@ -272,7 +177,7 @@ export default function Sidebar() {
               <span>{item.name}</span>
             </div>
 
-            <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border bg-neutral-900 text-neutral-400 border-neutral-800">
+            <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border border-theme bg-surface text-theme-muted">
               ↗ Pop-out
             </span>
           </a>
@@ -285,8 +190,8 @@ export default function Sidebar() {
           href={item.href}
           className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group ${
             isActive
-              ? 'bg-neutral-900 text-white border border-neutral-800 shadow-sm'
-              : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/60'
+              ? 'bg-surface-elevated text-theme-primary border border-theme shadow-sm'
+              : 'text-theme-secondary hover:text-theme-primary hover:bg-surface-elevated'
           }`}
         >
           <div className="flex items-center gap-3">
@@ -302,14 +207,14 @@ export default function Sidebar() {
                 item.badge === 'Sec'
                   ? 'bg-rose-950/60 text-rose-400 border-rose-800/60'
                   : isActive
-                  ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800/60'
-                  : 'bg-neutral-900 text-neutral-500 border-neutral-800'
+                  ? 'bg-brand-light text-brand border-brand-light font-black'
+                  : 'bg-surface text-theme-muted border-theme'
               }`}
             >
               {item.badge}
             </span>
           ) : isActive ? (
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span className="h-1.5 w-1.5 rounded-full bg-brand" />
           ) : null}
         </Link>
       );
@@ -318,55 +223,52 @@ export default function Sidebar() {
 
   return (
     <>
-      <aside className="w-64 h-screen bg-neutral-950 border-r border-neutral-800 flex flex-col justify-between select-none flex-shrink-0">
+      <aside className="w-64 h-screen bg-surface border-r border-theme flex flex-col justify-between select-none flex-shrink-0">
         <div>
           {/* Top Brand Header */}
-          <div className="h-16 px-6 border-b border-neutral-800 flex items-center justify-between">
+          <div className="h-16 px-6 border-b border-theme flex items-center justify-between">
             <Link href="/" className="flex items-center gap-2.5 group">
-              <div className="w-8 h-8 rounded-xl bg-emerald-500 flex items-center justify-center font-black text-neutral-950 text-sm shadow-md shadow-emerald-950/50 group-hover:scale-105 transition-transform">
+              <div className="w-8 h-8 rounded-xl bg-brand text-brand-contrast flex items-center justify-center font-black text-sm shadow-md group-hover:scale-105 transition-transform">
                 K
               </div>
               <div>
-                <span className="font-extrabold text-white text-base tracking-tight leading-none block">
+                <span className="font-extrabold text-theme-primary text-base tracking-tight leading-none block">
                   KitchOS
                 </span>
-                <span className="text-[10px] text-neutral-500 font-mono tracking-wider uppercase">
+                <span className="text-[10px] text-theme-muted font-mono tracking-wider uppercase">
                   Hospitality POS
                 </span>
               </div>
             </Link>
 
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" title="System Online" />
+            <span className="h-2 w-2 rounded-full bg-brand animate-pulse" title="System Online" />
           </div>
 
-          {/* Navigation Links */}
+          {/* Nav Items */}
           <nav className="p-3.5 space-y-4 overflow-y-auto max-h-[calc(100vh-17rem)]">
-            {/* Front of House Section */}
             <div>
-              <span className="px-3 text-[10px] font-black uppercase tracking-wider text-neutral-500 block mb-1.5">
+              <span className="px-3 text-[10px] font-black uppercase tracking-wider text-theme-muted block mb-1.5">
                 Front of House
               </span>
               <div className="space-y-1">{renderNavLinks(operationsItems)}</div>
             </div>
 
-            {/* Back of House Section (Manager & Owner Only) */}
             {isManager && managementItems.length > 0 && (
-              <div className="pt-2 border-t border-neutral-800/60">
-                <span className="px-3 text-[10px] font-black uppercase tracking-wider text-emerald-400/90 block mb-1.5">
+              <div className="pt-2 border-t border-theme-subtle">
+                <span className="px-3 text-[10px] font-black uppercase tracking-wider text-brand block mb-1.5">
                   Store Management
                 </span>
                 <div className="space-y-1">{renderNavLinks(managementItems)}</div>
               </div>
             )}
 
-            {/* Cashier Mode Notice when restricted */}
             {!isManager && (
-              <div className="p-3 rounded-2xl bg-neutral-900/40 border border-neutral-800/80 text-[11px] text-neutral-400 space-y-1">
-                <div className="flex items-center gap-1.5 font-bold text-amber-400 text-xs">
+              <div className="p-3 rounded-2xl bg-surface-elevated border border-theme text-[11px] text-theme-secondary space-y-1">
+                <div className="flex items-center gap-1.5 font-bold text-amber-500 text-xs">
                   <span>🔒</span>
                   <span>Cashier Mode</span>
                 </div>
-                <p className="text-[10px] text-neutral-500 leading-snug">
+                <p className="text-[10px] text-theme-muted leading-snug">
                   Management controls hidden. Tap lock to switch to Manager PIN.
                 </p>
               </div>
@@ -374,19 +276,18 @@ export default function Sidebar() {
           </nav>
         </div>
 
-        {/* SIDEBAR FOOTER: ACTIVE BRANCH & SESSION CONTROLS */}
-        <div className="p-3 border-t border-neutral-800 bg-neutral-950 space-y-2.5">
+        {/* Sidebar Footer: Active Branch & Active User */}
+        <div className="p-3 border-t border-theme bg-surface space-y-2.5">
           {/* Branch Switcher Card */}
-          <div className="p-2.5 rounded-2xl bg-neutral-900/80 border border-neutral-800 space-y-1.5">
+          <div className="p-2.5 rounded-2xl bg-surface-elevated border border-theme space-y-1.5">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] uppercase font-bold text-neutral-400 tracking-wider flex items-center gap-1">
+              <span className="text-[10px] uppercase font-bold text-theme-muted tracking-wider flex items-center gap-1">
                 <span>📍</span>
                 <span>Active Branch:</span>
               </span>
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="h-1.5 w-1.5 rounded-full bg-brand animate-pulse" />
             </div>
 
-            {/* Only managers can change the active branch; cashiers see their assigned branch */}
             {isManager ? (
               <select
                 value={currentBranch?.id || ''}
@@ -394,7 +295,7 @@ export default function Sidebar() {
                   const selected = branches.find((b) => b.id === e.target.value);
                   if (selected) setCurrentBranch(selected);
                 }}
-                className="w-full bg-neutral-950 border border-neutral-800 text-xs font-bold text-white rounded-xl px-2 py-1 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                className="w-full bg-surface border border-theme text-xs font-bold text-theme-primary rounded-xl px-2 py-1 focus:outline-none focus:border-brand cursor-pointer"
               >
                 {branches.map((b) => (
                   <option key={b.id} value={b.id}>
@@ -403,45 +304,34 @@ export default function Sidebar() {
                 ))}
               </select>
             ) : (
-              <div className="px-2.5 py-1.5 bg-neutral-950 border border-neutral-800 rounded-xl text-xs font-bold text-white truncate">
+              <div className="px-2.5 py-1 bg-surface border border-theme rounded-xl text-xs font-bold text-theme-primary truncate">
                 {currentBranch?.name || 'Main Branch'}
               </div>
             )}
           </div>
 
-          {/* Active Staff Profile & Session Actions */}
-          <div className="p-2.5 rounded-2xl bg-neutral-900/50 border border-neutral-800/80 flex items-center justify-between gap-2">
+          {/* Staff Card & Quick Lock */}
+          <div className="p-2.5 rounded-2xl bg-surface-elevated border border-theme flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <div
-                className={`w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-                  isManager
-                    ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60'
-                    : 'bg-neutral-800 text-neutral-300'
-                }`}
-              >
+              <div className="w-7 h-7 rounded-xl bg-brand-light text-brand border border-brand-light flex items-center justify-center text-xs font-bold flex-shrink-0">
                 {activeStaff?.name?.charAt(0) || '👤'}
               </div>
               <div className="truncate">
-                <span className="text-xs font-bold text-white block truncate leading-tight">
+                <span className="text-xs font-bold text-theme-primary block truncate leading-tight">
                   {activeStaff?.name || 'Staff Station'}
                 </span>
-                <span
-                  className={`text-[9px] font-mono uppercase font-bold ${
-                    isManager ? 'text-emerald-400' : 'text-neutral-400'
-                  }`}
-                >
+                <span className="text-[9px] font-mono uppercase font-bold text-brand">
                   {activeStaff?.role || 'Active'}
                 </span>
               </div>
             </div>
 
-            {/* Quick Lock & Sign Out Buttons */}
             <div className="flex items-center gap-1 flex-shrink-0">
               <button
                 type="button"
                 onClick={handleQuickLock}
-                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded-lg transition cursor-pointer"
-                title="Quick Lock Station (PIN Required to Unlock)"
+                className="p-1.5 bg-surface hover:bg-surface-elevated text-theme-secondary hover:text-theme-primary rounded-lg border border-theme transition cursor-pointer"
+                title="Quick Lock Station"
               >
                 🔒
               </button>
@@ -452,8 +342,8 @@ export default function Sidebar() {
                   setPinError(null);
                   setIsSignoutModalOpen(true);
                 }}
-                className="p-1.5 bg-neutral-800 hover:bg-rose-950 text-neutral-300 hover:text-rose-400 rounded-lg transition cursor-pointer"
-                title="Sign Out of Restaurant Account"
+                className="p-1.5 bg-surface hover:bg-rose-950 text-theme-secondary hover:text-rose-400 rounded-lg border border-theme transition cursor-pointer"
+                title="Sign Out Terminal"
               >
                 🚪
               </button>
@@ -462,34 +352,32 @@ export default function Sidebar() {
         </div>
       </aside>
 
-      {/* MODAL: MANAGER AUTHORIZATION FOR FULL ACCOUNT SIGN-OUT */}
+      {/* Sign-Out Confirmation Modal */}
       {isSignoutModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-            <div className="flex justify-between items-start border-b border-neutral-800 pb-3">
+          <div className="bg-surface border border-theme rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-start border-b border-theme pb-3">
               <div>
                 <span className="text-[10px] uppercase font-bold text-rose-400 tracking-wider block">
                   Manager Security Guard
                 </span>
-                <h3 className="text-base font-bold text-white mt-0.5">Sign Out Terminal Account</h3>
+                <h3 className="text-base font-bold text-theme-primary mt-0.5">
+                  Sign Out Terminal Account
+                </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setIsSignoutModalOpen(false)}
-                className="text-neutral-400 hover:text-white text-sm font-bold cursor-pointer"
+                className="text-theme-muted hover:text-theme-primary text-sm font-bold cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            <p className="text-xs text-neutral-400">
-              Signing out terminates this device's session. You will need your account email and password to log back in.
-            </p>
-
             <form onSubmit={handleConfirmSignOut} className="space-y-3 text-xs">
               <div>
-                <label className="block text-neutral-300 font-medium mb-1">
-                  Enter Manager PIN to Authorize *
+                <label className="block text-theme-secondary font-medium mb-1">
+                  Enter Manager PIN *
                 </label>
                 <input
                   type="password"
@@ -499,7 +387,7 @@ export default function Sidebar() {
                   placeholder="••••"
                   value={managerPin}
                   onChange={(e) => setManagerPin(e.target.value)}
-                  className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2.5 text-white font-mono text-center tracking-widest text-base focus:outline-none focus:border-rose-500"
+                  className="w-full bg-surface-elevated border border-theme rounded-xl px-3 py-2.5 text-theme-primary font-mono text-center tracking-widest text-base focus:outline-none focus:border-rose-500"
                 />
               </div>
 
@@ -509,11 +397,11 @@ export default function Sidebar() {
                 </p>
               )}
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-neutral-800">
+              <div className="flex justify-end gap-2 pt-2 border-t border-theme">
                 <button
                   type="button"
                   onClick={() => setIsSignoutModalOpen(false)}
-                  className="px-3.5 py-2 text-neutral-400 hover:text-white bg-neutral-800 rounded-xl cursor-pointer"
+                  className="px-3.5 py-2 text-theme-secondary hover:text-theme-primary bg-surface-elevated rounded-xl cursor-pointer"
                 >
                   Cancel
                 </button>

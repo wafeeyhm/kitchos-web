@@ -1,28 +1,14 @@
-import type { Metadata, Viewport } from 'next';
+import type { Metadata } from 'next';
+import { Inter } from 'next/font/google';
 import './globals.css';
 import { BranchProvider } from '@/context/BranchContext';
+import { ThemeProvider } from '@/context/ThemeContext';
+
+const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'KitchOS • F&B Point of Sale',
-  description: 'Enterprise Hospitality POS, KDS & COGS Management Engine',
-  manifest: '/manifest.json',
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: 'black-translucent',
-    title: 'KitchOS',
-  },
-  formatDetection: {
-    telephone: false,
-  },
-};
-
-export const viewport: Viewport = {
-  width: 'device-width',
-  initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-  viewportFit: 'cover',
-  themeColor: '#0a0a0a',
+  title: 'KitchOS - Hospitality POS & Kitchen Operating System',
+  description: 'Multi-tenant F&B management, inventory, KDS and checkout platform.',
 };
 
 export default function RootLayout({
@@ -31,15 +17,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark bg-neutral-950 text-neutral-100 antialiased select-none">
-      <head>
-        <meta name="mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-      </head>
-      <body className="overflow-hidden h-screen w-screen bg-neutral-950">
+    <html lang="en">
+      <body className={inter.className}>
         <BranchProvider>
-          {children}
+          <ThemeProvider>
+            {children}
+          </ThemeProvider>
         </BranchProvider>
       </body>
     </html>
