@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 
@@ -37,7 +38,7 @@ export default function LoginPage() {
       if (error) throw error;
 
       if (data.session) {
-        // Ensure default staff member is assigned in localStorage if not set
+        // Assign default staff member in localStorage if none is cached
         const { data: defaultStaff } = await supabase
           .from('staff_members')
           .select('id, name, role')
@@ -61,7 +62,6 @@ export default function LoginPage() {
   const handleQuickBypassDev = async () => {
     setLoading(true);
     try {
-      // Pick first staff member and jump straight into POS
       const { data: staff } = await supabase
         .from('staff_members')
         .select('id, name, role')
@@ -149,14 +149,21 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Development / Standalone Demo Bypass */}
-        <div className="pt-4 border-t border-neutral-800/80 text-center">
+        {/* Onboarding Link & Demo Bypass */}
+        <div className="pt-4 border-t border-neutral-800/80 flex flex-col gap-2 text-center">
+          <Link
+            href="/onboarding"
+            className="inline-block py-2 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
+          >
+            ✨ New store owner? Start Setup & Onboarding →
+          </Link>
+
           <button
             type="button"
             onClick={handleQuickBypassDev}
-            className="text-[11px] text-neutral-500 hover:text-emerald-400 transition cursor-pointer"
+            className="text-[11px] text-neutral-500 hover:text-neutral-400 transition cursor-pointer"
           >
-            ⚡ Local Demo / Terminal Bypass (Proceed to POS)
+            ⚡ Local Demo / Quick Terminal Bypass
           </button>
         </div>
       </div>
